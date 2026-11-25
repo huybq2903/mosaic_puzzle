@@ -21,6 +21,13 @@ namespace Falcon.Modules.Core.BigData
         // Flag decorate-once của LogDecorService — internal nên không bị FKeyService encode vào payload
         internal bool decorated;
 
+        /// <summary>
+        /// Log này chỉ để dựng bản chụp khẩn (S2), KHÔNG vào hàng đợi — decorator phải bỏ mọi side effect: không tăng số
+        /// thứ tự, không lấy-rồi-đặt-lại bộ đếm, không ghi pool, không báo sang service khác. Xem
+        /// <see cref="LogDecorService.DecorPreview"/>.
+        /// </summary>
+        internal bool preview;
+
         [JsonIgnore] public long CreatedTime => clientCreateDate;
 
         /// <summary>

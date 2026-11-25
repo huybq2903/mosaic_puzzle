@@ -30,8 +30,10 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             var setting = Resources.Load<SOAdsSetting>("SOAdsSetting");
             if (setting == null)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(
                     "SOAdsSetting doesn't exists. Go to 'Falcon/Modules/ThirdParty/Ads Settings' to config.");
+#endif
                 return;
             }
 

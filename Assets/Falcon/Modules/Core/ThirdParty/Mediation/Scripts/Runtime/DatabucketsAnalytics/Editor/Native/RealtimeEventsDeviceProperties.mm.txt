@@ -1,0 +1,71 @@
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#include <sys/utsname.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Validate before serialization: unsupported values (including NaN in legacy
+// preferences) can raise an exception even when an NSError parameter is supplied.
+// Keep these bridges compatible with Objective-C exceptions disabled by Unity.
+static char *CopyJson(NSDictionary *value)
+{
+    if (value == nil || ![NSJSONSerialization isValidJSONObject:value]) return NULL;
+    NSError *error = nil;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:value options:0 error:&error];
+    if (json == nil || error != nil) return NULL;
+    char *result = (char *)malloc(json.length + 1);
+    if (result == NULL) return NULL;
+    memcpy(result, json.bytes, json.length);
+    result[json.length] = '\0';
+    return result;
+}
+
+extern "C" char *RTE_ReadDeviceProperties()
+{
+    @autoreleasepool
+    {
+        UIDevice *device = [UIDevice currentDevice];
+        if (device == nil) return NULL;
+        struct utsname hardware;
+        NSString *model = uname(&hardware) == 0 ? [NSString stringWithUTF8String:hardware.machine] : nil;
+        if (model == nil) model = device.model;
+        NSString *language = [[[NSLocale preferredLanguages] firstObject] lowercaseString];
+        NSString *version = device.systemVersion;
+        // Dictionary literals and stringByAppendingString: reject nil arguments.
+        NSDictionary *properties = @{
+            @"device.category": device.userInterfaceIdiom == UIUserInterfaceIdiomPad ? @"tablet" : @"mobile",
+            @"device.user_default_language": [language stringByReplacingOccurrencesOfString:@"_" withString:@"-"] ?: (id)[NSNull null],
+            @"device.mobile_brand_name": @"Apple",
+            @"device.mobile_marketing_name": model ?: (id)[NSNull null],
+            @"device.mobile_model_name": model ?: (id)[NSNull null],
+            @"device.mobile_os_hardware_model": model ?: (id)[NSNull null],
+            @"device.operating_system": @"iOS",
+            @"device.operating_system_version": version != nil ? (id)[@"iOS " stringByAppendingString:version] : (id)[NSNull null],
+            @"device.time_zone_offset_seconds": @([[NSTimeZone localTimeZone] secondsFromGMTForDate:[NSDate date]])
+        };
+        return CopyJson(properties);
+    }
+}
+
+extern "C" void RTE_FreeDeviceProperties(char *value)
+{
+    free(value);
+}
+
+// SDK 3.0.3 uses standard UserDefaults, not Unity's PlayerPrefs key/type mapping.
+extern "C" char *RTE_ReadLegacyState()
+{
+    @autoreleasepool
+    {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        if (defaults == nil) return NULL;
+        NSMutableDictionary *state = [NSMutableDictionary dictionary];
+        for (NSString *key in @[@"user_pseudo_id", @"session_number", @"first_seen_ms", @"rt2_anchor_ms"])
+        {
+            id value = [defaults objectForKey:[@"com.databuckets." stringByAppendingString:key]];
+            if ([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]])
+                state[key] = value;
+        }
+        return CopyJson(state);
+    }
+}

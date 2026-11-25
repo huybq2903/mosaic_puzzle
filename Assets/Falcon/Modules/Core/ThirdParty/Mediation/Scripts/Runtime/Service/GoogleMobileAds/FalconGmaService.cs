@@ -398,8 +398,6 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         private void OnInterstitialAdFullScreenContentFailed(AdError obj)
         {
             MediationManager.Instance.DebugLog("GMA > OnIntertitialAdFullScreenContentFailed");
-            new FAdDisplayFailedLog(AdType.Interstitial, _placementId, "IronSource", LevelData.Instance.level)
-                .Send();
             _onInterstitialFailed?.Invoke();
             DelayCall(0.5f, LoadInterstitial);
         }
@@ -465,13 +463,31 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
 #endif
         }
 
+        public AdReadyInfo ReadyInterstitialInfo()
+        {
+            if (_useMultiCall)
+                return MultiCall.Instance.PeekInterstitial();
+#if GOOGLE_MOBILE_ADS_ENABLE
+            var network = _interstitialAd?.GetResponseInfo()?.GetLoadedAdapterResponseInfo()?.AdSourceName;
+            return network == null ? null : new AdReadyInfo { adMediation = "Admob", adNetwork = network };
+#else
+            return null;
+#endif
+        }
+
         private void ShowInterstitial(
             string where, Action onInterstitialClosed = null, Action onFail = null,
             bool needAdBreak = false, bool showForRewarded = false)
         {
-            if (_settings == null) return;
-            if (!_settings.UseInterstitialGa) return;
-            if (!_isInitialized.HasValue || !_isInitialized.Value) return;
+            if (_settings == null || !_settings.UseInterstitialGa || !_isInitialized.HasValue || !_isInitialized.Value)
+            {
+                onFail?.Invoke();
+                return;
+            }
+
+            //inter chiếu thay rewarded: mang adWhen / triggerPlayTurnId của lượt rewarded sang
+            if (showForRewarded) MediationManager.ApplyRewardedContextToInterstitial();
+
             if (IsRemoveAds() && !showForRewarded)
             {
                 onInterstitialClosed?.Invoke();
@@ -484,13 +500,13 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                 return;
             }
 
-/*
-            if ((float)eCPM_inter < FalconConfig.Instance<FalconMediationConfig>().f_ecpm_show_inter)
-            {
-                MediationManager.Instance.DebugLog("GMA == ecpm_inter < " + FalconConfig.Instance<FalconMediationConfig>().f_ecpm_show_inter);
-                return;
-            }
-*/
+            /*
+                        if ((float)eCPM_inter < FalconConfig.Instance<FalconMediationConfig>().f_ecpm_show_inter)
+                        {
+                            MediationManager.Instance.DebugLog("GMA == ecpm_inter < " + FalconConfig.Instance<FalconMediationConfig>().f_ecpm_show_inter);
+                            return;
+                        }
+            */
             MediationManager.Instance.DebugLog("GMA > ShowInterstitial");
             _placementId = where;
             _isShowingAds = true;
@@ -519,16 +535,23 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             {
                 _dateTimeTimeShow = DateTime.Now;
                 _idAd = Guid.NewGuid().ToString();
-                if (_useMultiCall)
-                    MultiCall.Instance.ShowInterstitial(where, onInterstitialClosed, onFail);
 #if GOOGLE_MOBILE_ADS_ENABLE
-                var adapterResponseInfo = _interstitialAd.GetResponseInfo().GetLoadedAdapterResponseInfo();
-                new CSAdStart(_idAd, AdType.Interstitial.ToString(), where, adapterResponseInfo.AdSourceName,
-                    "Admob", _interstitialAd.GetAdUnitID()).Send();
                 new FAdCalledLog(AdType.Interstitial, where, "Admob", LevelData.Instance.level)
                     .Send();
-                _interstitialAd.Show();
 #endif
+                if (_useMultiCall)
+                {
+                    MultiCall.Instance.ShowInterstitial(where, onInterstitialClosed, onFail);
+                }
+                else
+                {
+#if GOOGLE_MOBILE_ADS_ENABLE
+                    var adapterResponseInfo = _interstitialAd.GetResponseInfo().GetLoadedAdapterResponseInfo();
+                    new CSAdStart(_idAd, AdType.Interstitial.ToString(), where, adapterResponseInfo.AdSourceName,
+                        "Admob", _interstitialAd.GetAdUnitID()).Send();
+                    _interstitialAd.Show();
+#endif
+                }
                 FalconMmpLog.LogEvent(FalconMmpLog.MMP_INTERS_SHOW, new Dictionary<string, string>
                 {
                     { "af_level", LevelData.Instance.level + "" }
@@ -1011,11 +1034,11 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             var adapterResponseInfo = _rewardedAd.GetResponseInfo().GetLoadedAdapterResponseInfo();
             new CSAdStart(_idAd, AdType.Reward.ToString(), where, adapterResponseInfo.AdSourceName,
                 "Admob", _rewardedAd.GetAdUnitID()).Send();
-            new FAdCalledLog(AdType.Interstitial, where, "Admob", LevelData.Instance.level)
+            new FAdCalledLog(AdType.Reward, where, "Admob", LevelData.Instance.level)
                 .Send();
             if (_useMultiCall)
             {
-                MultiCall.Instance.ShowRewardedVideo(where, onRewardedComplete, onFail);
+                MultiCall.Instance.ShowRewardedVideo(where, onRewardedComplete, onFail, showInterstitialInstead);
             }
             else
             {
@@ -1053,8 +1076,6 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             MediationManager.Instance.DebugLog("GMA > Rewarded ad OnRewardedAdFailedToDisplayEvent");
             FalconFirebaseLog.Log(FalconFirebaseLog.ADS_REWARD_SHOW_FAIL, error.ToString());
             _onRewardedFailed?.Invoke();
-            new FAdDisplayFailedLog(AdType.Reward, _placementId, "IronSource", LevelData.Instance.level)
-                .Send();
             DelayCall(0.5f, LoadRewardedAd);
         }
 #endif

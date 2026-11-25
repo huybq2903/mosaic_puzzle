@@ -95,9 +95,15 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public void Log(
             string adWhere, string adPrecision, string adCountry, double adRev,
-            string adNetwork, string adMediation, int currentLevel = 0)
+            string adNetwork, string adMediation, int currentLevel = 0, string adUnitId = null,
+            string adAlgorithm = null)
         {
-            var key = new BannerKey(adWhere, adPrecision, adCountry, adNetwork, adMediation, currentLevel);
+            // Thuật toán: mốc tự nhập thì thắng, bỏ trống thì lấy từ cache của format — cụm banner
+            // không đi qua ApplyContext nên phải tự nối ở đây (án 26/10: dòng request của banner có
+            // ad_algorithm, dòng impression thì không).
+            adAlgorithm ??= _adViewCache.CurrentAlgorithm(AdType.Banner);
+            var key = new BannerKey(adWhere, adPrecision, adCountry, adNetwork, adMediation, currentLevel,
+                adUnitId, adAlgorithm);
             // Đọc id ở ĐÂY chứ không bắt Mediation truyền vào: id là của SDK, và cụm phải biết
             // ngay lúc gom thì mới phát hiện được nó có vắt qua hai instance hay không.
             var adViewId = _adViewCache.CurrentViewId(AdType.Banner);
@@ -155,12 +161,22 @@ namespace Falcon.Modules.Core.BigData
             public int count;
             public string adViewId;
 
+            /// <summary>
+            ///     Thêm 19/10. Bản lưu của phiên CŨ không có field này → Newtonsoft để null, đúng
+            ///     nghĩa "mediation chưa gửi mã" — nên không cần migrate, chỉ cần đừng đổi kiểu.
+            /// </summary>
+            public string adUnitId;
+
+            /// <summary>Thêm 26/10 — bản lưu phiên cũ không có field này thì Newtonsoft để null.</summary>
+            public string adAlgorithm;
+
             public static BannerClusterSnapshot From(BannerKey key, BannerValue value)
             {
                 return new BannerClusterSnapshot
                 {
                     where = key.AdWhere, precision = key.AdPrecision, country = key.AdCountry,
                     network = key.AdNetwork, mediation = key.AdMediation, level = key.CurrentLevel,
+                    adUnitId = key.AdUnitId, adAlgorithm = key.AdAlgorithm,
                     rev = value.AdRev, count = value.ImpressionCount, adViewId = value.AdViewId
                 };
             }
@@ -176,7 +192,9 @@ namespace Falcon.Modules.Core.BigData
                     adRev = rev,
                     adNetwork = network,
                     adMediation = mediation,
-                    currentLevel = level
+                    currentLevel = level,
+                    adUnitId = adUnitId,
+                    adAlgorithm = adAlgorithm
                 })
                 {
                     impressionCount = count,

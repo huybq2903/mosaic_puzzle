@@ -32,7 +32,7 @@ internal sealed class ToolbarServerConfig : BaseToolbarElement
 
     public override void OnInit()
     {
-        _content = new GUIContent("Server Config", this.Tooltip);
+        _content = new GUIContent("Server", this.Tooltip);
     }
 
     public override void OnDrawInToolbar()
@@ -66,7 +66,7 @@ internal sealed class ToolbarClearData : BaseToolbarElement
 
     public override void OnInit()
     {
-        _content = new GUIContent("Clear Data", EditorGUIUtility.IconContent("d_TreeEditor.Trash").image, this.Tooltip);
+        _content = new GUIContent("Clear", EditorGUIUtility.IconContent("d_TreeEditor.Trash").image, this.Tooltip);
     }
 
     public override void OnDrawInToolbar()

@@ -50,6 +50,15 @@ namespace Falcon.Modules.Core.BigData
             return TimeSpan.Zero;
         }
 
+        /// <summary>Bản nullable: vắng giữ vắng; số âm thì VẮNG (không kẹp về 0 — vắng còn hơn một số sai trông hợp lệ).</summary>
+        protected TimeSpan? CheckTimeSpanNonNegative(TimeSpan? i, string fieldName)
+        {
+            if (i == null || i.Value.TotalMilliseconds >= 0) return i;
+            Debug.LogError(
+                $"Dwh Log invalid field: the value of field {fieldName} of {GetType().Name} must be non-negative, input value '{i}' — dropped");
+            return null;
+        }
+
         protected int CheckNumberNonNegative(int i, string fieldName)
         {
             if (i >= 0) return i;

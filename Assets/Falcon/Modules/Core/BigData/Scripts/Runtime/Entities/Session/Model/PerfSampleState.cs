@@ -5,6 +5,8 @@
  * Date: 2026-08-05
  */
 
+using System;
+
 // ReSharper disable once CheckNamespace
 namespace Falcon.Modules.Core.BigData
 {
@@ -15,11 +17,15 @@ namespace Falcon.Modules.Core.BigData
         public readonly int? FrameDropCount;
         public readonly int? MemoryWarningCount;
 
-        public PerfSummary(float? avgFps, int? frameDropCount, int? memoryWarningCount)
+        /// <summary>Khung chậm nhất của quãng (ms) — chỉ dòng <c>f_sdk_perf_screen</c> gửi; null nếu không có mẫu.</summary>
+        public readonly int? WorstFrameMs;
+
+        public PerfSummary(float? avgFps, int? frameDropCount, int? memoryWarningCount, int? worstFrameMs = null)
         {
             AvgFps = avgFps;
             FrameDropCount = frameDropCount;
             MemoryWarningCount = memoryWarningCount;
+            WorstFrameMs = worstFrameMs;
         }
     }
 
@@ -50,14 +56,33 @@ namespace Falcon.Modules.Core.BigData
         private float _elapsedSec;
         private int _frameDropCount;
         private int _memoryWarningCount;
+        private float _worstFrameSec;
+        private bool _skipNextFrame;
+
+        /// <summary>
+        /// App vừa quay lại từ nền: khung KẾ TIẾP mang cả quãng nằm nền / dựng lại màn hình, không phải giật.
+        /// Nền dưới <see cref="NOT_RENDERING_SEC"/> thì khung đó lọt vào khoảng 0,1–2 s và bị đếm oan một khung
+        /// rớt — nên bỏ hẳn khung đầu sau mỗi lần resume (hợp đồng đợt 3 B1, có thư era).
+        /// </summary>
+        public void MarkResumed()
+        {
+            lock (_lock) _skipNextFrame = true;
+        }
 
         public void AddFrame(float deltaSec)
         {
-            if (deltaSec <= 0 || deltaSec > NOT_RENDERING_SEC) return;
             lock (_lock)
             {
+                if (_skipNextFrame)
+                {
+                    _skipNextFrame = false;
+                    return;
+                }
+
+                if (deltaSec <= 0 || deltaSec > NOT_RENDERING_SEC) return;
                 _frames++;
                 _elapsedSec += deltaSec;
+                if (deltaSec > _worstFrameSec) _worstFrameSec = deltaSec;
                 if (deltaSec > FRAME_DROP_SEC) _frameDropCount++;
             }
         }
@@ -76,11 +101,13 @@ namespace Falcon.Modules.Core.BigData
             lock (_lock)
             {
                 var summary = _frames > 0 && _elapsedSec > 0
-                    ? new PerfSummary(_frames / _elapsedSec, _frameDropCount, _memoryWarningCount)
+                    ? new PerfSummary(_frames / _elapsedSec, _frameDropCount, _memoryWarningCount,
+                        (int)Math.Round(_worstFrameSec * 1000))
                     : new PerfSummary(null, null, _memoryWarningCount > 0 ? _memoryWarningCount : (int?)null);
 
                 _frames = 0;
                 _elapsedSec = 0;
+                _worstFrameSec = 0;
                 _frameDropCount = 0;
                 _memoryWarningCount = 0;
                 return summary;

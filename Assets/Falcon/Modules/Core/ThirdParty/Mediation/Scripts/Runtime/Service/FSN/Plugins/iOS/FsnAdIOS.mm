@@ -162,6 +162,9 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
 - (UIView *)fsnFindSubviewWithTag:(NSInteger)tag inView:(UIView *)view;
 - (void)fsnArmNativeCloseFallbackForContainer:(UIView *)container requestId:(int)requestId;
 
+// Khai báo ở đây (không phải trong .h) để C bridge cuối file gọi được.
+- (void)forceDismissVisibleNativeContainers;
+
 @end
 
 @implementation FsnAdIOS
@@ -355,6 +358,12 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
 
 - (void)loadNativeAdWithRequestId:(int)requestId
                        mediaRatio:(int)ratio {
+    [self loadNativeAdWithRequestId:requestId mediaRatio:ratio bidFloorCents:nil];
+}
+
+- (void)loadNativeAdWithRequestId:(int)requestId
+                       mediaRatio:(int)ratio
+                    bidFloorCents:(NSString *)bidFloorCents {
 
     FsnAdStateIOS *state = [self stateForRequestId:requestId];
 
@@ -435,10 +444,15 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
     GADNativeAdMediaAdLoaderOptions *mediaOptions = [[GADNativeAdMediaAdLoaderOptions alloc] init];
     mediaOptions.mediaAspectRatio = state.mediaAspectRatio;
 
+    // Giống Android setAdChoicesPlacement(ADCHOICES_TOP_LEFT). Close/CTA ở TOP_LEFT được lùi xuống
+    // thêm fsn_ad_choice_size (20) để tránh AdChoices.
+    GADNativeAdViewAdOptions *adViewOptions = [[GADNativeAdViewAdOptions alloc] init];
+    adViewOptions.preferredAdChoicesPosition = GADAdChoicesPositionTopLeftCorner;
+
     GADAdLoader *adLoader = [[GADAdLoader alloc] initWithAdUnitID:state.adUnitId
                                                rootViewController:rootVC
                                                           adTypes:@[GADAdLoaderAdTypeNative]
-                                                          options:@[videoOptions, mediaOptions]];
+                                                          options:@[videoOptions, mediaOptions, adViewOptions]];
 
     adLoader.delegate = self;
 
@@ -453,17 +467,61 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
     state.adLoader = adLoader;
 
     GADRequest *request = [GADRequest request];
+
+    state.bidFloorCents = bidFloorCents.length > 0 ? bidFloorCents : nil;
+    if (state.bidFloorCents) {
+        // Giá sàn AdMob: extras "rusd" = eCPM tính bằng cent (vd "1234" = eCPM $12.34).
+        GADExtras *extras = [[GADExtras alloc] init];
+        extras.additionalParameters = @{ @"rusd": state.bidFloorCents };
+        [request registerAdNetworkExtras:extras];
+    }
+
     [state.adLoader loadRequest:request];
 
-    NSLog(@"[FsnAdIOS] Start Loading Native Ad RequestId: %d, Type: %d, Unit: %@",
+    NSLog(@"[FsnAdIOS] Start Loading Native Ad RequestId: %d, Type: %d, Unit: %@, rusd: %@",
           requestId,
           state.nativeType,
-          state.adUnitId);
+          state.adUnitId,
+          state.bidFloorCents ?: @"none");
 }
 
 - (BOOL)isNativeAdReadyWithRequestId:(int)requestId {
     FsnAdStateIOS *state = [self stateForRequestId:requestId];
     return state != nil && state.nativeAd != nil;
+}
+
+// Revenue (USD / impression) của ad đã load, lấy từ responseInfo.extrasDictionary["ad_value_string"].
+// 0 nếu chưa có ad, không có key, không parse được hoặc khác USD.
+- (double)loadedRevenueWithRequestId:(int)requestId {
+    FsnAdStateIOS *state = [self stateForRequestId:requestId];
+    GADNativeAd *nativeAd = state.nativeAd;
+    if (!nativeAd) {
+        return 0;
+    }
+
+    NSDictionary *extras = nativeAd.responseInfo.extrasDictionary;
+    id rawValue = extras[@"ad_value_string"];
+    if (![rawValue isKindOfClass:[NSString class]] || [(NSString *)rawValue length] == 0) {
+        NSLog(@"[FsnAdIOS] Revenue unknown (no ad_value_string). RequestId: %d", requestId);
+        return 0;
+    }
+
+    id currency = extras[@"ad_value_currency"];
+    if ([currency isKindOfClass:[NSString class]] && [(NSString *)currency length] > 0 &&
+        [(NSString *)currency caseInsensitiveCompare:@"USD"] != NSOrderedSame) {
+        NSLog(@"[FsnAdIOS] Revenue currency %@ != USD. RequestId: %d", currency, requestId);
+        return 0;
+    }
+
+    NSScanner *scanner = [NSScanner scannerWithString:(NSString *)rawValue];
+    scanner.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    double value = 0;
+    if (![scanner scanDouble:&value] || value < 0) {
+        NSLog(@"[FsnAdIOS] Revenue parse failed: %@. RequestId: %d", rawValue, requestId);
+        return 0;
+    }
+
+    return value;
 }
 
 - (void)hideNativeAdWithRequestId:(int)requestId {
@@ -487,6 +545,30 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
         if (_unityOnAdCompleted) {
             _unityOnAdCompleted(requestId, "");
         }
+    });
+}
+
+- (void)destroyNativeWithRequestId:(int)requestId {
+    // Async trên main queue như show/hide để giữ đúng thứ tự với các lệnh Unity gửi trước đó.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        FsnAdStateIOS *state = [self stateForRequestId:requestId];
+        if (!state) {
+            return;
+        }
+
+        // Đang hiển thị: không gỡ ad user đang xem, dismissNativeAdContainer sẽ tự dọn state này.
+        if (state.adContainerView) {
+            NSLog(@"[FsnAdIOS][Destroy] Skip, native is showing. RequestId=%d", requestId);
+            return;
+        }
+
+        NSLog(@"[FsnAdIOS][Destroy] Release native state. RequestId=%d, HadAd=%@, Loading=%@",
+              requestId,
+              state.nativeAd ? @"YES" : @"NO",
+              state.isLoading ? @"YES" : @"NO");
+
+        [self fsnClearNativeState:state];
+        [self.nativeStates removeObjectForKey:@(requestId)];
     });
 }
 
@@ -606,24 +688,27 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
             UIView *openStoreView = [self fsnFindSubviewWithTag:FsnOpenStoreButtonTag inView:container];
             UIView *fakeCloseView = [self fsnFindSubviewWithTag:FsnFakeCloseButtonTag inView:container];
             UIView *realCtaView = [self fsnFindSubviewWithTag:FsnRealCtaButtonTag inView:container];
+            UIView *ctaOverlayView = [self fsnCtaOverlayForNativeType:state.nativeType
+                                                      openStoreButton:openStoreView
+                                                      fakeCloseButton:fakeCloseView];
 
-            // Type 0/OpenStore luôn dùng ảnh Open Store làm CTA thật, kể cả khi app vừa foreground
+            // Normal/FakeClose luôn dùng ảnh CTA overlay làm CTA thật, kể cả khi app vừa foreground
             // và ảnh đang chờ delay để hiện. CTA mặc định phải tiếp tục bị ẩn.
-            if (state.nativeType == FsnAdTypeNormal && openStoreView) {
+            // Giống Android: ad không có CTA thì không đăng ký CTA nào.
+            if (ctaOverlayView) {
                 if (realCtaView) {
                     realCtaView.hidden = YES;
                     realCtaView.alpha = 0.0;
                     realCtaView.userInteractionEnabled = NO;
                 }
 
-                nativeAdView.callToActionView = openStoreView;
-                openStoreView.userInteractionEnabled = NO;
+                BOOL hasCallToAction = (state.nativeAd.callToAction.length > 0);
+                nativeAdView.callToActionView = hasCallToAction ? ctaOverlayView : nil;
+                ctaOverlayView.userInteractionEnabled = NO;
 
-                NSLog(@"[FsnAdIOS][CTAProxy] Recover OpenStore as permanent callToActionView. RequestId=%d",
-                      state.requestId);
-            } else if (fakeCloseView && !fakeCloseView.hidden && fakeCloseView.alpha >= 0.01) {
-                nativeAdView.callToActionView = fakeCloseView;
-                fakeCloseView.userInteractionEnabled = NO;
+                NSLog(@"[FsnAdIOS][CTAProxy] Recover CTA overlay as permanent callToActionView. RequestId=%d | NativeType=%d",
+                      state.requestId,
+                      state.nativeType);
             } else if (realCtaView) {
                 realCtaView.hidden = NO;
                 realCtaView.alpha = 1.0;
@@ -939,9 +1024,9 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
 		}
 	
 		closeButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
-		closeButton.contentEdgeInsets = isCollapsible ? UIEdgeInsetsMake(7, 7, 7, 7) : UIEdgeInsetsMake(5, 5, 5, 5);
+		closeButton.contentEdgeInsets = UIEdgeInsetsMake(7, 7, 7, 7);
 		closeButton.clipsToBounds = YES;
-		closeButton.layer.cornerRadius = isCollapsible ? 18.0 : 17.5;
+		closeButton.layer.cornerRadius = 25.0;
 
         [self fsnPrepareCloseButton:closeButton requestId:requestId];
 
@@ -966,15 +1051,25 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
 		// Không tự dismiss. Nếu muốn click xuyên vào ad, để NO.
 		openStoreButton.userInteractionEnabled = NO;
 
-		UIImageView *fakeCloseButton = [[UIImageView alloc] init];
+		// Ảnh CTA của type FakeClose, giống iv_cta bên Android (y hệt iv_close, chỉ khác ảnh):
+		// 50x50, padding 7, ảnh fsn_ad_cta. Giống closeButton: contentEdgeInsets 7, bo tròn 25.
+		// Dùng chung logic với openStoreButton (type Normal), chỉ khác hình ảnh.
+		// userInteractionEnabled = NO để Google Mobile Ads SDK tự xử lý click CTA.
+		UIView *fakeCloseButton = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 50.0, 50.0)];
 		fakeCloseButton.tag = FsnFakeCloseButtonTag;
-		fakeCloseButton.image = [self fsnLoadImageNamed:@"fsn_ad_close_ic_fake"];
-		fakeCloseButton.contentMode = UIViewContentModeScaleAspectFit;
+		fakeCloseButton.backgroundColor = [UIColor clearColor];
 		fakeCloseButton.clipsToBounds = YES;
+		fakeCloseButton.layer.cornerRadius = 25.0;
 		fakeCloseButton.hidden = YES;
-		// Fake close chỉ để đánh lừa thị giác giống Android,
-		// không phải close thật.
 		fakeCloseButton.userInteractionEnabled = NO;
+
+		UIImageView *ctaImageView = [[UIImageView alloc] initWithFrame:CGRectInset(fakeCloseButton.bounds, 7.0, 7.0)];
+		ctaImageView.image = [self fsnLoadImageNamed:@"fsn_ad_cta"];
+		ctaImageView.contentMode = UIViewContentModeScaleAspectFit;
+		ctaImageView.clipsToBounds = YES;
+		ctaImageView.userInteractionEnabled = NO;
+		ctaImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+		[fakeCloseButton addSubview:ctaImageView];
 
         headlineLabel.text = state.nativeAd.headline;
         adView.headlineView = headlineLabel;
@@ -1024,7 +1119,7 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
         [container addSubview:closeButton];
 		[container addSubview:countDownLabel];
 
-        // OpenStore/FakeClose vẫn là vùng click ads giả lập CTA nên giữ trong GADNativeAdView.
+        // Ảnh CTA overlay (Normal: openStore, FakeClose: fsn_ad_cta) là CTA asset nên giữ trong GADNativeAdView.
 		[adView addSubview:openStoreButton];
 		[adView addSubview:fakeCloseButton];
 
@@ -1097,31 +1192,35 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
         }
         }
 
-        // Áp dụng chung cho cả 4 layout thường: Type 0/OpenStore không dùng CTA mặc định.
-        // Ảnh Open Store sẽ là callToActionView thật của Google Mobile Ads và được hiện theo overlay flow.
-        BOOL useOpenStoreAsPermanentCTA = (!isCollapsible && state.nativeType == FsnAdTypeNormal);
+        // Android parity (useOpenStoreAsCallToAction() = true cho Normal và FakeClose):
+        // CTA mặc định bị ẩn, ảnh CTA overlay là CTA thật. Normal dùng openStore, FakeClose dùng fsn_ad_cta.
+        UIView *ctaOverlayButton = [self fsnCtaOverlayForNativeType:state.nativeType
+                                                    openStoreButton:openStoreButton
+                                                    fakeCloseButton:fakeCloseButton];
 
-        if (useOpenStoreAsPermanentCTA) {
+        if (!isCollapsible && ctaOverlayButton) {
             ctaButton.hidden = YES;
             ctaButton.alpha = 0.0;
             ctaButton.userInteractionEnabled = NO;
 
             // Đặt sẵn frame trước khi bind nativeAd; chỉ giữ hidden cho đến khi hết delay.
-            [self applyOverlayPosition:openStoreButton
-                              position:resolvedOverlayPos
-                          parentBounds:adView.bounds
-                                  size:CGSizeMake(100.0, 40.0)
-                            fakeOffset:NO];
+            [self fsnApplyCtaOverlayPosition:ctaOverlayButton
+                                    position:resolvedOverlayPos
+                                  nativeType:state.nativeType
+                                  parentView:adView];
 
-            openStoreButton.hidden = YES;
-            openStoreButton.alpha = 1.0;
-            openStoreButton.userInteractionEnabled = NO;
-            adView.callToActionView = openStoreButton;
+            ctaOverlayButton.hidden = YES;
+            ctaOverlayButton.alpha = 1.0;
+            ctaOverlayButton.userInteractionEnabled = NO;
 
-            NSLog(@"[FsnAdIOS][CTAProxy] Type 0: hide real CTA and pre-bind OpenStore CTA. RequestId=%d | Layout=%d | Frame=%@",
+            // Android populateData: chỉ setCallToActionView(ảnh CTA) khi ad có CTA.
+            adView.callToActionView = (state.nativeAd.callToAction.length > 0) ? ctaOverlayButton : nil;
+
+            NSLog(@"[FsnAdIOS][CTAProxy] Hide real CTA and pre-bind CTA overlay. RequestId=%d | NativeType=%d | Layout=%d | Frame=%@",
                   requestId,
+                  state.nativeType,
                   layoutType,
-                  NSStringFromCGRect(openStoreButton.frame));
+                  NSStringFromCGRect(ctaOverlayButton.frame));
         }
 
         if (!isCollapsible) {
@@ -1131,17 +1230,14 @@ static const NSInteger FsnRealCtaButtonTag = 91007;
             // Giống Android:
             // - Countdown/OpenStore/FakeClose dùng resolvedOverlayPos.
             // - Close thật dùng resolvedClosePos.
-            [self applyOverlayPosition:countDownLabel
-                              position:resolvedOverlayPos
-                          parentBounds:container.bounds
-                                  size:CGSizeMake(35.0, 35.0)
-                            fakeOffset:NO];
+            [self fsnApplySafeRootPosition:countDownLabel
+                                  position:resolvedOverlayPos
+                                      size:CGSizeMake(35.0, 35.0)
+                                parentView:container];
 
-            [self applyOverlayPosition:closeButton
-                              position:resolvedClosePos
-                          parentBounds:container.bounds
-                                  size:CGSizeMake(35.0, 35.0)
-                            fakeOffset:NO];
+            [self fsnApplyRealClosePosition:closeButton
+                                   position:resolvedClosePos
+                                 nativeType:state.nativeType];
 
             NSLog(@"[FsnAdIOS][Position][INITIAL] RequestId=%d | "
                   "CountdownPos=%d | CountdownFrame=%@ | "
@@ -1646,6 +1742,141 @@ requireInteraction:(BOOL)requireInteraction {
     }
 }
 
+// Ảnh CTA overlay theo type, giống getCtaOverlayView() bên Android:
+// Normal -> iv_openStore, FakeClose -> iv_cta. Type khác không dùng ảnh CTA overlay (nil).
+- (UIView *)fsnCtaOverlayForNativeType:(int)nativeType
+                       openStoreButton:(UIView *)openStoreButton
+                       fakeCloseButton:(UIView *)fakeCloseButton {
+    switch (nativeType) {
+        case FsnAdTypeNormal:
+            return openStoreButton;
+
+        case FsnAdTypeFakeClose:
+            return fakeCloseButton;
+
+        default:
+            return nil;
+    }
+}
+
+// Kích thước ảnh CTA overlay theo layout Android: iv_openStore 100x40dp, iv_cta 50x50dp.
+- (CGSize)fsnCtaOverlaySizeForNativeType:(int)nativeType {
+    if (nativeType == FsnAdTypeFakeClose) {
+        return CGSizeMake(50.0, 50.0);
+    }
+
+    return CGSizeMake(100.0, 40.0);
+}
+
+// Giống Android applyPositionBelowAdChoices(): TOP_LEFT (góc AdChoices) lùi xuống fsn_ad_choice_size (20).
+// FakeClose (alignTopOverlaysBelowAdChoices() = true): TOP_RIGHT cũng lùi xuống, để CTA và close
+// luôn cùng độ cao, chỉ đổi trái/phải cho nhau.
+- (CGFloat)fsnAdChoicesReserveForPosition:(int)pos nativeType:(int)nativeType {
+    // applyOverlayPosition coi mọi giá trị ngoài 1/2/3 là TOP_RIGHT.
+    BOOL isTopLeft = (pos == 1);
+    BOOL isTopRight = (pos != 1 && pos != 2 && pos != 3);
+
+    if (isTopLeft || (isTopRight && nativeType == FsnAdTypeFakeClose)) {
+        return 20.0;
+    }
+
+    return 0.0;
+}
+
+// Vị trí ảnh CTA overlay, giống Android applyOverlayPosition():
+// - iv_openStore (Normal): applyOpenStorePosition(), TOP_RIGHT lùi xuống 20 để ngang hàng với close ở TOP_LEFT.
+// - iv_cta (FakeClose): applyPositionBelowAdChoices() giống iv_close.
+- (void)fsnApplyCtaOverlayPosition:(UIView *)ctaOverlayButton
+                          position:(int)pos
+                        nativeType:(int)nativeType
+                        parentView:(UIView *)parentView {
+
+    if (!ctaOverlayButton || !parentView) {
+        return;
+    }
+
+    [self fsnApplySafeRootPosition:ctaOverlayButton
+                          position:pos
+                              size:[self fsnCtaOverlaySizeForNativeType:nativeType]
+                        parentView:parentView];
+
+    CGFloat extraTop = 0.0;
+
+    if (nativeType == FsnAdTypeFakeClose) {
+        extraTop = [self fsnAdChoicesReserveForPosition:pos nativeType:nativeType];
+    } else if (nativeType == FsnAdTypeNormal) {
+        // applyOverlayPosition coi mọi giá trị ngoài 1/2/3 là TOP_RIGHT.
+        BOOL isTopRight = (pos != 1 && pos != 2 && pos != 3);
+        extraTop = isTopRight ? 20.0 : 0.0;
+    }
+
+    CGRect frame = ctaOverlayButton.frame;
+    frame.origin.y += extraTop;
+    ctaOverlayButton.frame = frame;
+}
+
+// Android safeRootView (Normal/FakeClose/Countdown đều useSafeAreaPadding() = true):
+// paddingTop = max(fsn_ad_choice_size 20dp, cutout.top - fsn_close_btn_size/2). Không có padding trái/phải/dưới.
+- (CGFloat)fsnSafeRootTopPaddingForView:(UIView *)view {
+    CGFloat cutoutTop = 0.0;
+
+    if (@available(iOS 11.0, *)) {
+        cutoutTop = view.safeAreaInsets.top;
+    }
+
+    return MAX(20.0, cutoutTop - 12.5);
+}
+
+// Giống Android applyPosition(view, position) cho view nằm trong safeRootView
+// (iv_openStore, iv_skip, layout_circle_countdown): margin 16, TOP_* bị đẩy xuống thêm paddingTop của safeRootView.
+- (void)fsnApplySafeRootPosition:(UIView *)view
+                        position:(int)pos
+                            size:(CGSize)size
+                      parentView:(UIView *)parentView {
+
+    if (!view || !parentView) {
+        return;
+    }
+
+    [self applyOverlayPosition:view
+                      position:pos
+                  parentBounds:parentView.bounds
+                          size:size
+                    fakeOffset:NO];
+
+    // applyOverlayPosition coi mọi giá trị ngoài 1/2/3 là TOP_RIGHT.
+    BOOL isTopPosition = (pos != 2 && pos != 3);
+    if (!isTopPosition) {
+        return;
+    }
+
+    CGRect frame = view.frame;
+    frame.origin.y += [self fsnSafeRootTopPaddingForView:parentView];
+    view.frame = frame;
+}
+
+// Giống Android applyRealClosePosition(): margin 16 trong vùng nội dung của safeRootView
+// (với FakeClose, realCloseOverlayHost được sync trùng vùng này), cộng khoảng tránh AdChoices.
+// Close và CTA của FakeClose vì vậy dùng cùng một mốc toạ độ, chỉ đổi trái/phải cho nhau.
+- (void)fsnApplyRealClosePosition:(UIView *)closeButton
+                         position:(int)pos
+                       nativeType:(int)nativeType {
+
+    UIView *parentView = closeButton.superview;
+    if (!closeButton || !parentView) {
+        return;
+    }
+
+    [self fsnApplySafeRootPosition:closeButton
+                          position:pos
+                              size:CGSizeMake(50.0, 50.0)
+                        parentView:parentView];
+
+    CGRect frame = closeButton.frame;
+    frame.origin.y += [self fsnAdChoicesReserveForPosition:pos nativeType:nativeType];
+    closeButton.frame = frame;
+}
+
 - (void)hideAllOverlayViewsWithCloseButton:(UIButton *)closeButton
                             countDownLabel:(UILabel *)countDownLabel
                            openStoreButton:(UIView *)openStoreButton
@@ -1688,36 +1919,33 @@ requireInteraction:(BOOL)requireInteraction {
         return;
     }
 
-    BOOL keepOpenStoreCTA = (state.nativeType == FsnAdTypeNormal);
+    BOOL hasCallToAction = (state.nativeAd.callToAction.length > 0);
 
-    if (keepOpenStoreCTA) {
-        // Type 0: countdown chỉ mở khóa nút close. Open Store phải tiếp tục hiển thị
-        // và tiếp tục là callToActionView; CTA mặc định vẫn bị ẩn.
-        closeButton.hidden = YES;
-        countDownLabel.hidden = YES;
-        fakeCloseButton.hidden = YES;
-        openStoreButton.hidden = NO;
-        openStoreButton.alpha = 1.0;
-        openStoreButton.userInteractionEnabled = NO;
-        openStoreButton.transform = CGAffineTransformIdentity;
-        [openStoreButton setNeedsLayout];
-        [openStoreButton layoutIfNeeded];
-    } else {
-        [self hideAllOverlayViewsWithCloseButton:closeButton
-                                  countDownLabel:countDownLabel
-                                 openStoreButton:openStoreButton
-                                 fakeCloseButton:fakeCloseButton];
+    // Normal: openStore, FakeClose: fsn_ad_cta. Type khác: nil (dùng CTA mặc định).
+    UIView *ctaOverlayButton = [self fsnCtaOverlayForNativeType:state.nativeType
+                                                openStoreButton:openStoreButton
+                                                fakeCloseButton:fakeCloseButton];
+    BOOL keepCtaOverlay = (ctaOverlayButton != nil && hasCallToAction);
+
+    [self hideAllOverlayViewsWithCloseButton:closeButton
+                              countDownLabel:countDownLabel
+                             openStoreButton:openStoreButton
+                             fakeCloseButton:fakeCloseButton];
+
+    if (keepCtaOverlay) {
+        // Giống Android FullscreenNativeDialog/FakeClose: khi close thật xuất hiện,
+        // ảnh CTA vẫn giữ nguyên và tiếp tục là CTA.
+        ctaOverlayButton.hidden = NO;
+        ctaOverlayButton.alpha = 1.0;
+        ctaOverlayButton.userInteractionEnabled = NO;
+        ctaOverlayButton.transform = CGAffineTransformIdentity;
+        [ctaOverlayButton setNeedsLayout];
+        [ctaOverlayButton layoutIfNeeded];
     }
 
-    CGRect closeParentBounds = closeButton.superview
-        ? closeButton.superview.bounds
-        : pb;
-
-    [self applyOverlayPosition:closeButton
-                      position:closePos
-                  parentBounds:closeParentBounds
-                          size:CGSizeMake(35.0, 35.0)
-                    fakeOffset:NO];
+    [self fsnApplyRealClosePosition:closeButton
+                           position:closePos
+                         nativeType:state.nativeType];
 
     [self fsnPrepareCloseButton:closeButton requestId:requestId];
     closeButton.hidden = NO;
@@ -1727,23 +1955,27 @@ requireInteraction:(BOOL)requireInteraction {
     closeButton.transform = CGAffineTransformIdentity;
     [closeButton setNeedsLayout];
     [closeButton layoutIfNeeded];
-	
-	if ([adView isKindOfClass:[GADNativeAdView class]]) {
-		GADNativeAdView *nativeAdView = (GADNativeAdView *)adView;
-		UIView *realCtaView = [adView viewWithTag:FsnRealCtaButtonTag];
 
-        if (keepOpenStoreCTA && openStoreButton) {
+    if ([adView isKindOfClass:[GADNativeAdView class]]) {
+        GADNativeAdView *nativeAdView = (GADNativeAdView *)adView;
+        UIView *realCtaView = [adView viewWithTag:FsnRealCtaButtonTag];
+
+        if (ctaOverlayButton) {
+            // Android Normal/FakeClose (useOpenStoreAsCallToAction() = true) không bao giờ hiện lại
+            // CTA mặc định. Ad không có CTA thì không đăng ký CTA nào.
             if (realCtaView) {
                 realCtaView.hidden = YES;
                 realCtaView.alpha = 0.0;
                 realCtaView.userInteractionEnabled = NO;
             }
 
-            nativeAdView.callToActionView = openStoreButton;
-            openStoreButton.userInteractionEnabled = NO;
+            nativeAdView.callToActionView = keepCtaOverlay ? ctaOverlayButton : nil;
+            ctaOverlayButton.userInteractionEnabled = NO;
 
-            NSLog(@"[FsnAdIOS][CTAProxy] Keep OpenStore as callToActionView after countdown. RequestId=%d",
-                  requestId);
+            NSLog(@"[FsnAdIOS][CTAProxy] After countdown: CTA overlay bound=%@. RequestId=%d | NativeType=%d",
+                  keepCtaOverlay ? @"YES" : @"NO",
+                  requestId,
+                  state.nativeType);
         } else if (realCtaView) {
             realCtaView.hidden = NO;
             realCtaView.alpha = 1.0;
@@ -1753,37 +1985,42 @@ requireInteraction:(BOOL)requireInteraction {
             NSLog(@"[FsnAdIOS][CTAProxy] Restore real CTA as callToActionView. RequestId=%d",
                   requestId);
         }
-	}
-
-    if (openStoreButton.superview && keepOpenStoreCTA) {
-        [openStoreButton.superview bringSubviewToFront:openStoreButton];
     }
 
+    if (keepCtaOverlay && ctaOverlayButton.superview) {
+        [ctaOverlayButton.superview bringSubviewToFront:ctaOverlayButton];
+    }
+
+    // Close thật luôn nằm trên overlay quảng cáo và vẫn là control độc lập ngoài GADNativeAdView.
     if (closeButton.superview) {
         [closeButton.superview bringSubviewToFront:closeButton];
     }
 
     NSLog(@"[FsnAdIOS][Overlay] Show final close. "
-          "RequestId=%d | ClosePosFromCSharp=%d | KeepOpenStore=%@ | "
-          "CloseFrame=%@ | CountdownFrame=%@ | OpenStoreFrame=%@",
+          "RequestId=%d | NativeType=%d | ClosePosFromCSharp=%d | KeepCtaOverlay=%@ | "
+          "CloseFrame=%@ | CountdownFrame=%@ | CtaOverlayFrame=%@",
           requestId,
+          state.nativeType,
           closePos,
-          keepOpenStoreCTA ? @"YES" : @"NO",
+          keepCtaOverlay ? @"YES" : @"NO",
           NSStringFromCGRect(closeButton.frame),
           NSStringFromCGRect(countDownLabel.frame),
-          NSStringFromCGRect(openStoreButton.frame));
+          NSStringFromCGRect(ctaOverlayButton.frame));
 }
 
-- (void)startOpenStoreOverlayForRequestId:(int)requestId
-                                    state:(FsnAdStateIOS *)state
-                                   adView:(UIView *)adView
-                              closeButton:(UIButton *)closeButton
-                           countDownLabel:(UILabel *)countDownLabel
-                          openStoreButton:(UIView *)openStoreButton
-                          fakeCloseButton:(UIView *)fakeCloseButton
-                             openStorePos:(int)openStorePos
-                                 closePos:(int)closePos
-                             parentBounds:(CGRect)pb {
+// Flow dùng chung cho Normal và FakeClose, giống FullscreenNativeDialog.doCountDown() bên Android
+// (FakeClose kế thừa, chỉ khác ảnh CTA): sau delay hiện ảnh CTA nếu ad có CTA -> chờ countDownSec
+// -> hiện close thật, ảnh CTA vẫn giữ nguyên.
+- (void)startCtaOverlayForRequestId:(int)requestId
+                              state:(FsnAdStateIOS *)state
+                             adView:(UIView *)adView
+                        closeButton:(UIButton *)closeButton
+                     countDownLabel:(UILabel *)countDownLabel
+                    openStoreButton:(UIView *)openStoreButton
+                    fakeCloseButton:(UIView *)fakeCloseButton
+                       openStorePos:(int)openStorePos
+                           closePos:(int)closePos
+                       parentBounds:(CGRect)pb {
 
     if (![self isOverlayFlowAliveForRequestId:requestId state:state adView:adView]) {
         return;
@@ -1794,42 +2031,61 @@ requireInteraction:(BOOL)requireInteraction {
                              openStoreButton:openStoreButton
                              fakeCloseButton:fakeCloseButton];
 
-    [self applyOverlayPosition:openStoreButton
-                      position:openStorePos
-                  parentBounds:pb
-                          size:CGSizeMake(100.0, 40.0)
-                    fakeOffset:NO];
+    // Normal: openStore, FakeClose: fsn_ad_cta.
+    UIView *ctaOverlayButton = [self fsnCtaOverlayForNativeType:state.nativeType
+                                                openStoreButton:openStoreButton
+                                                fakeCloseButton:fakeCloseButton];
 
-    openStoreButton.hidden = NO;
-    openStoreButton.alpha = 1.0;
-    openStoreButton.userInteractionEnabled = NO;
-    openStoreButton.transform = CGAffineTransformIdentity;
-    [openStoreButton setNeedsLayout];
-    [openStoreButton layoutIfNeeded];
-	
-	if ([adView isKindOfClass:[GADNativeAdView class]]) {
-    GADNativeAdView *nativeAdView = (GADNativeAdView *)adView;
+    // Tính lại vị trí khi view đã ở trong window để safeAreaInsets có giá trị thật.
+    [self fsnApplyCtaOverlayPosition:ctaOverlayButton
+                            position:openStorePos
+                          nativeType:state.nativeType
+                          parentView:adView];
 
-    // Tạm thời biến ảnh openStore thành vùng click CTA thật.
-    nativeAdView.callToActionView = openStoreButton;
+    // Android: ảnh CTA VISIBLE nếu ad có CTA, ngược lại INVISIBLE.
+    BOOL hasCallToAction = (state.nativeAd.callToAction.length > 0);
 
-    // Giữ NO để Google Mobile Ads SDK tự xử lý click.
-    openStoreButton.userInteractionEnabled = NO;
+    ctaOverlayButton.hidden = !hasCallToAction;
+    ctaOverlayButton.alpha = 1.0;
+    ctaOverlayButton.userInteractionEnabled = NO;
+    ctaOverlayButton.transform = CGAffineTransformIdentity;
+    [ctaOverlayButton setNeedsLayout];
+    [ctaOverlayButton layoutIfNeeded];
 
-    NSLog(@"[FsnAdIOS][CTAProxy] OpenStore image is now callToActionView. RequestId=%d",
-          requestId);
-}
-    if (openStoreButton.superview) {
-        [openStoreButton.superview bringSubviewToFront:openStoreButton];
+    if ([adView isKindOfClass:[GADNativeAdView class]]) {
+        GADNativeAdView *nativeAdView = (GADNativeAdView *)adView;
+        UIView *realCtaView = [adView viewWithTag:FsnRealCtaButtonTag];
+
+        // CTA mặc định không xuất hiện ở Normal/FakeClose.
+        if (realCtaView) {
+            realCtaView.hidden = YES;
+            realCtaView.alpha = 0.0;
+            realCtaView.userInteractionEnabled = NO;
+        }
+
+        // Ảnh CTA là CTA thật (chỉ khi ad có CTA). Giữ userInteractionEnabled = NO
+        // để Google Mobile Ads SDK tự xử lý click.
+        nativeAdView.callToActionView = hasCallToAction ? ctaOverlayButton : nil;
+        ctaOverlayButton.userInteractionEnabled = NO;
+
+        NSLog(@"[FsnAdIOS][CTAProxy] CTA overlay bound=%@. RequestId=%d | NativeType=%d",
+              hasCallToAction ? @"YES" : @"NO",
+              requestId,
+              state.nativeType);
+    }
+
+    if (!ctaOverlayButton.hidden && ctaOverlayButton.superview) {
+        [ctaOverlayButton.superview bringSubviewToFront:ctaOverlayButton];
     }
 
     NSInteger showSec = MAX(1, state.countDownSec);
 
-    NSLog(@"[FsnAdIOS][Overlay] Show OpenStore CTA. RequestId=%d | OpenStorePos=%d | CloseUnlockAfter=%lds | Frame=%@",
+    NSLog(@"[FsnAdIOS][Overlay] Show CTA overlay. RequestId=%d | NativeType=%d | OverlayPos=%d | CloseUnlockAfter=%lds | Frame=%@",
           requestId,
+          state.nativeType,
           openStorePos,
           (long)showSec,
-          NSStringFromCGRect(openStoreButton.frame));
+          NSStringFromCGRect(ctaOverlayButton.frame));
 
     __weak FsnAdIOS *weakSelf = self;
 
@@ -1849,17 +2105,17 @@ requireInteraction:(BOOL)requireInteraction {
         if (![strongSelf isOverlayFlowAliveForRequestId:requestId
                                                    state:state
                                                   adView:adView]) {
-            NSLog(@"[FsnAdIOS][Overlay] Skip final close after OpenStore; "
+            NSLog(@"[FsnAdIOS][Overlay] Skip final close after CTA overlay; "
                   "flow is no longer alive. RequestId=%d",
                   requestId);
             return;
         }
 
-        // Re-assert OpenStore trước khi hiện Close.
-        openStoreButton.hidden = NO;
-        openStoreButton.alpha = 1.0;
-        openStoreButton.userInteractionEnabled = NO;
-        openStoreButton.transform = CGAffineTransformIdentity;
+        // Re-assert ảnh CTA trước khi hiện Close.
+        ctaOverlayButton.hidden = !hasCallToAction;
+        ctaOverlayButton.alpha = 1.0;
+        ctaOverlayButton.userInteractionEnabled = NO;
+        ctaOverlayButton.transform = CGAffineTransformIdentity;
 
         [strongSelf showFinalCloseForRequestId:requestId
                                          state:state
@@ -1871,83 +2127,6 @@ requireInteraction:(BOOL)requireInteraction {
                                       closePos:closePos
                                   parentBounds:pb];
     });
-}
-
-- (void)startFakeCloseOverlayForRequestId:(int)requestId
-                                    state:(FsnAdStateIOS *)state
-                                   adView:(UIView *)adView
-                              closeButton:(UIButton *)closeButton
-                           countDownLabel:(UILabel *)countDownLabel
-                          openStoreButton:(UIView *)openStoreButton
-                          fakeCloseButton:(UIView *)fakeCloseButton
-                             openStorePos:(int)openStorePos
-                                 closePos:(int)closePos
-                             parentBounds:(CGRect)pb {
-
-    if (![self isOverlayFlowAliveForRequestId:requestId state:state adView:adView]) {
-        return;
-    }
-
-    [self hideAllOverlayViewsWithCloseButton:closeButton
-                              countDownLabel:countDownLabel
-                             openStoreButton:openStoreButton
-                             fakeCloseButton:fakeCloseButton];
-
-    [self applyOverlayPosition:fakeCloseButton
-                      position:openStorePos
-                  parentBounds:pb
-                          size:CGSizeMake(35.0, 35.0)
-                    fakeOffset:YES];
-
-    fakeCloseButton.hidden = NO;
-	
-	if ([adView isKindOfClass:[GADNativeAdView class]]) {
-    GADNativeAdView *nativeAdView = (GADNativeAdView *)adView;
-
-    // Tạm thời biến ảnh fake close thành vùng click CTA thật.
-    nativeAdView.callToActionView = fakeCloseButton;
-
-    // Giữ NO để Google Mobile Ads SDK tự xử lý click.
-    fakeCloseButton.userInteractionEnabled = NO;
-
-    NSLog(@"[FsnAdIOS][CTAProxy] FakeClose image is now callToActionView. RequestId=%d",
-          requestId);
-}
-
-    if (fakeCloseButton.superview) {
-        [fakeCloseButton.superview bringSubviewToFront:fakeCloseButton];
-    }
-
-    NSInteger showSec = MAX(1, state.countDownSec);
-
-    NSLog(@"[FsnAdIOS][Overlay] Show fake close. RequestId=%d | OpenStorePos=%d | Duration=%lds | Frame=%@",
-          requestId,
-          openStorePos,
-          (long)showSec,
-          NSStringFromCGRect(fakeCloseButton.frame));
-
-    __weak FsnAdIOS *weakSelf = self;
-
-    state.countDownTimer = [NSTimer scheduledTimerWithTimeInterval:(NSTimeInterval)showSec
-                                                            repeats:NO
-                                                              block:^(NSTimer * _Nonnull timer) {
-        FsnAdIOS *strongSelf = weakSelf;
-        if (!strongSelf) {
-            return;
-        }
-
-        state.countDownTimer = nil;
-
-        [strongSelf showFinalCloseForRequestId:requestId
-                                         state:state
-                                        adView:adView
-                                   closeButton:closeButton
-                                countDownLabel:countDownLabel
-                               openStoreButton:openStoreButton
-                               fakeCloseButton:fakeCloseButton
-                                      closePos:closePos
-                                  parentBounds:pb];
-    }];
 }
 
 - (void)startNumberCountDownOverlayForRequestId:(int)requestId
@@ -1983,15 +2162,10 @@ requireInteraction:(BOOL)requireInteraction {
                              openStoreButton:openStoreButton
                              fakeCloseButton:fakeCloseButton];
 
-    CGRect countdownParentBounds = countDownLabel.superview
-        ? countDownLabel.superview.bounds
-        : pb;
-
-    [self applyOverlayPosition:countDownLabel
-                      position:openStorePos
-                  parentBounds:countdownParentBounds
-                          size:CGSizeMake(35.0, 35.0)
-                    fakeOffset:NO];
+    [self fsnApplySafeRootPosition:countDownLabel
+                          position:openStorePos
+                              size:CGSizeMake(35.0, 35.0)
+                        parentView:(countDownLabel.superview ?: adView)];
 
     countDownLabel.layer.cornerRadius = 17.5;
     countDownLabel.text = [NSString stringWithFormat:@"%ld", (long)state.currentRemainingSec];
@@ -2083,31 +2257,19 @@ requireInteraction:(BOOL)requireInteraction {
         }
 
         switch (state.nativeType) {
-            case FsnAdTypeNormal: {
-                [strongSelf startOpenStoreOverlayForRequestId:requestId
-                                                        state:state
-                                                       adView:adView
-                                                  closeButton:closeButton
-                                               countDownLabel:countDownLabel
-                                              openStoreButton:openStoreButton
-                                              fakeCloseButton:fakeCloseButton
-                                                 openStorePos:openStorePos
-                                                     closePos:closePos
-                                                 parentBounds:pb];
-                break;
-			}
-
+            // Normal và FakeClose dùng chung một flow, chỉ khác ảnh CTA.
+            case FsnAdTypeNormal:
             case FsnAdTypeFakeClose: {
-                [strongSelf startFakeCloseOverlayForRequestId:requestId
-                                                        state:state
-                                                       adView:adView
-                                                  closeButton:closeButton
-                                               countDownLabel:countDownLabel
-                                              openStoreButton:openStoreButton
-                                              fakeCloseButton:fakeCloseButton
-                                                 openStorePos:openStorePos
-                                                     closePos:closePos
-                                                 parentBounds:pb];
+                [strongSelf startCtaOverlayForRequestId:requestId
+                                                  state:state
+                                                 adView:adView
+                                            closeButton:closeButton
+                                         countDownLabel:countDownLabel
+                                        openStoreButton:openStoreButton
+                                        fakeCloseButton:fakeCloseButton
+                                           openStorePos:openStorePos
+                                               closePos:closePos
+                                           parentBounds:pb];
                 break;
 			}
 
@@ -2160,8 +2322,8 @@ requireInteraction:(BOOL)requireInteraction {
                                                    openStoreButton:openStoreButton
                                                    fakeCloseButton:fakeCloseButton];
 
-                    // Re-apply frame giống Android layout: top-right, 36pt.
-                    CGFloat closeSize = 36.0;
+                    // Re-apply frame giống Android layout: top-right, 50pt.
+                    CGFloat closeSize = 50.0;
                     CGFloat rightMargin = 16.0;
                     CGFloat topMargin = 8.0;
                     CGRect closeParentBounds = closeButton.superview
@@ -2538,14 +2700,14 @@ requireInteraction:(BOOL)requireInteraction {
     media.layer.masksToBounds = YES;
     media.contentMode = UIViewContentModeScaleAspectFit;
 
-    // Android btnClose: 36dp top|end inside top panel, image padding around 5dp.
-    CGFloat closeSize = 36.0;
+    // Android btnClose: 50dp top|end inside top panel, image padding around 5dp.
+    CGFloat closeSize = 50.0;
     CGFloat closeX = screenW - paddingX - closeSize;
     CGFloat closeY = paddingTop;
     closeButton.frame = CGRectMake(closeX, closeY, closeSize, closeSize);
     closeButton.contentEdgeInsets = UIEdgeInsetsMake(7.0, 7.0, 7.0, 7.0);
     closeButton.backgroundColor = [UIColor clearColor];
-    closeButton.layer.cornerRadius = 18.0;
+    closeButton.layer.cornerRadius = 25.0;
     closeButton.clipsToBounds = YES;
     closeButton.hidden = YES;
 
@@ -3698,6 +3860,43 @@ requireInteraction:(BOOL)requireInteraction {
     NSLog(@"[FsnAdIOS][ForceRemove] Done.");
 }
 
+// Dọn sạch native ad ĐANG HIỂN THỊ. Unity gọi qua C bridge khi watchdog chống màn hình đen thấy
+// lượt native kẹt (đã báo đóng nhưng container vẫn còn trên màn hình, hoặc overlay đen không gỡ được).
+//
+// Chỉ đụng tới request ĐANG SHOW (state có adContainerView): ad của placement khác đã load xong nhưng
+// chưa show thì giữ nguyên, khác với fsnForceRemoveAllFsnNativeViewsFromRoot (xoá sạch mọi state).
+//
+// KHÔNG bắn _unityOnAdCompleted: hàm này chỉ được gọi từ nhánh mà phía C# đã tự kết luận lượt show
+// hỏng và tự chạy tiếp luồng (gỡ overlay, PrepareNextAd, trả callback) — bắn thêm completed ở đây là
+// C# nhận hai lần kết thúc cho cùng một lượt.
+- (void)forceDismissVisibleNativeContainers {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[FsnAdIOS][ForceDismiss] Begin.");
+
+        // 1. Gỡ mọi container / native view còn dính trên root view (kể cả view mồ côi đã mất state).
+        [self fsnForceRemoveAllFsnNativeViewsFromRootOnly];
+
+        // 2. State nào đang trỏ tới container vừa bị gỡ thì coi như đã đóng — không dọn thì request đó
+        //    kẹt ở trạng thái "đang show" tới hết phiên và không bao giờ load lại được.
+        NSArray<NSNumber *> *keys = [self.nativeStates.allKeys copy];
+
+        for (NSNumber *key in keys) {
+            FsnAdStateIOS *state = self.nativeStates[key];
+
+            if (!state || !state.adContainerView) {
+                continue;
+            }
+
+            NSLog(@"[FsnAdIOS][ForceDismiss] Clear showing state requestId=%d", state.requestId);
+
+            [self fsnClearNativeState:state];
+            [self.nativeStates removeObjectForKey:key];
+        }
+
+        NSLog(@"[FsnAdIOS][ForceDismiss] Done.");
+    });
+}
+
 @end
 
 // MARK: - C BRIDGE LINKING EXTERNAL TO UNITY
@@ -3737,6 +3936,18 @@ extern "C" {
                                                   mediaRatio:ratio];
     }
 
+    void FsnAdIOS_LoadNativeAdWithFloor(int requestId, int ratio, const char* bidFloorCents) {
+        NSString *floor = bidFloorCents ? [NSString stringWithUTF8String:bidFloorCents] : nil;
+
+        [[FsnAdIOS sharedInstance] loadNativeAdWithRequestId:requestId
+                                                  mediaRatio:ratio
+                                               bidFloorCents:floor];
+    }
+
+    double FsnAdIOS_GetLoadedRevenue(int requestId) {
+        return [[FsnAdIOS sharedInstance] loadedRevenueWithRequestId:requestId];
+    }
+
     void FsnAdIOS_ShowNativeAd(int requestId,
                                int layoutType,
                                int overlayOpenStorePos,
@@ -3754,5 +3965,14 @@ extern "C" {
 
     bool FsnAdIOS_IsNativeAdReady(int requestId) {
         return [[FsnAdIOS sharedInstance] isNativeAdReadyWithRequestId:requestId];
+    }
+
+    void FsnAdIOS_DestroyNative(int requestId) {
+        [[FsnAdIOS sharedInstance] destroyNativeWithRequestId:requestId];
+    }
+
+    // Không theo requestId: gỡ MỌI native đang hiển thị. Xem forceDismissVisibleNativeContainers.
+    void FsnAdIOS_ForceDismissVisibleNativeContainers() {
+        [[FsnAdIOS sharedInstance] forceDismissVisibleNativeContainers];
     }
 }

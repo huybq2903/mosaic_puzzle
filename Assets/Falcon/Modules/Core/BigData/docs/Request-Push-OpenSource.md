@@ -22,5 +22,9 @@ lại không" tiếp tục không trả lời được.
   mang nguồn — không dán sang lần mở sau (dán là số liệu sai); sửa bằng cách gọi sớm hơn.
 - KHÔNG gọi khi không chắc nguồn — sai đắt hơn thiếu. Thread nào cũng được.
 
-Tham chiếu: `DWH-EventLog-API-Spec.md` §5.14; ATT/consent của UMP xem file riêng
-`Request-Ump-PermissionLog.md`.
+Tham chiếu: `DWH-EventLog-API-Spec.md` §5.14.
+
+⚠ **Quyền nhận push (`f_sdk_permission_push`) nằm ở thư KHÁC, cũng gửi owner này:**
+`Request-Permission-AttConsentPush.md` §B — một lời gọi trong `NotificationManager`, cộng một lần
+đọc trạng thái lúc khởi động (đó mới là chỗ bắt được user tắt thông báo trong Settings). §A của thư
+đó là ATT + consent quảng cáo, gửi owner `Core/ThirdParty/Ump`.

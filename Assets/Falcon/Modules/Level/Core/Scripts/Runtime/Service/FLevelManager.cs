@@ -13,6 +13,7 @@ using System.Linq;
 using Falcon.Helpers.Devkit;
 using Falcon.Helpers.EventBus;
 using Falcon.Modules.Core.BigData;
+using JetBrains.Annotations;
 using UnityEngine;
 
 namespace Falcon.Modules.Level.Core
@@ -57,7 +58,46 @@ namespace Falcon.Modules.Level.Core
         /// </summary>
         public string PlayTurnId => LevelTurnService.Instance.OpenPlayTurnId;
         
+        /// <summary>
+        ///     Băm của <c>data + param</c> cho log analytics — <b>null khi không có data màn</b>,
+        ///     xem <see cref="HasLevelData"/>.
+        /// </summary>
         public string CurrentMd5LevelDataParam { get; private set; }
+
+        /// <summary>
+        ///     Băm của riêng DATA màn cho log analytics — <b>null khi không có data màn</b>.
+        ///     <br/>⚠ <b>Sửa 09/11</b>: doc cũ ở đây ghi <i>"băm DATA màn do GAME SERVER đặt, client
+        ///     echo nguyên văn"</i> — <b>sai</b>, và phía kho đã dựng một luật đọc lên chỗ sai đó
+        ///     (họ tưởng <c>level_data_id</c> là một phép kiểm trùng băm ĐỘC LẬP với
+        ///     <c>current_level_id</c>). Đường thật đi một chiều <b>LÊN</b>:
+        ///     <c>CSLevelReady.md5LevelData = GetLevelDataMd5(level)</c>, tức CLIENT tính, rồi mới
+        ///     <c>Send()</c>. Hai id **cùng hàm băm, cùng 5 ký tự base64 = 30 bit**, chỉ khác đầu vào
+        ///     (<c>data</c> so với <c>data + param</c>) — nên cái này chỉ tách được <i>đổi layout</i>
+        ///     khỏi <i>đổi tuning</i>, không nói thêm gì về chuyện trùng băm.
+        /// </summary>
+        public string CurrentLevelDataId => HasLevelData ? currentMd5LevelData : null;
+
+        /// <summary>
+        ///     Lượt này CÓ data màn hay không — cửa duy nhất quyết định hai id trên có lên log hay
+        ///     không.
+        ///     <br/>🔴 <b>Vì sao phải có cửa này</b> (kho bắt 09/11): <c>Md5Utils.GetMd5First5Char("")</c>
+        ///     trả <c>1B2M2</c> — băm của chuỗi rỗng, một giá trị <b>trông hợp lệ</b> — và
+        ///     <c>Normalize(null)</c> trả <c>""</c> nên null cũng ra đúng chuỗi đó. Game không dùng
+        ///     level từ server thì <see cref="GetLevelData"/> trả <c>""</c> (cả ở nhánh <c>catch</c>),
+        ///     nên <b>mọi màn của game đó gửi cùng một id</b>: ai <c>GROUP BY current_level_id</c> gộp
+        ///     cả game lại thành một màn mà không thấy gì sai. Vắng còn hơn một id chung — vắng thì
+        ///     người ta đi tìm, sai thì người ta dùng. Hai field bên BigData đều
+        ///     <c>[FKey(RemoveIfNull = true)]</c> nên null là <b>vắng khỏi dây</b>, không hoá
+        ///     <c>"Unknown"</c>.
+        ///     <br/>⚠ Cửa đặt ở <b>đây</b>, không ở <c>Md5Utils</c>: hàm đó còn tính băm cho
+        ///     <c>CSLevelStart</c> / <c>CSLevelResult</c> / <c>CSLevelVerifyReq</c> / <c>CSLevelReady</c> —
+        ///     hợp đồng với game server, không được đổi vì một chuyện của log.
+        ///     <br/>⚠ Xét <b><see cref="currentLevelData"/> rỗng</b>, không xét chuỗi ghép rỗng: data
+        ///     rỗng + param có chữ thì băm ra id của RIÊNG param, dùng chung mọi màn cùng tuning — nó
+        ///     lẫn đúng vào tập <i>"game dùng lại thiết kế màn"</i> nên không ai soi ra. Tính cả
+        ///     chuỗi chỉ-khoảng-trắng vì nó cũng chung một id cho mọi màn.
+        /// </summary>
+        private bool HasLevelData => !string.IsNullOrWhiteSpace(currentLevelData);
 
         public string FilterID => AbLevelInfo.Instance.filterID;
         public string AbVariant => AbLevelInfo.Instance.abVariant;
@@ -208,13 +248,19 @@ namespace Falcon.Modules.Level.Core
             currentLevelData = GetLevelData(level);
             currentMd5LevelData = csLevelReady.md5LevelData;
             currentLevelParam = csLevelReady.levelParam;
-            CurrentMd5LevelDataParam = Md5Utils.GetMd5First5Char(currentLevelData + currentLevelParam);
+            CurrentMd5LevelDataParam = HasLevelData
+                ? Md5Utils.GetMd5First5Char(currentLevelData + currentLevelParam)
+                : null;
             csLevelReady.Send();
         }
 
         /// <param name="param">
         /// Kênh LEGACY (đời PuzzleLevelLog): object param của game, ToDictionary rồi chảy vào
         /// extraMeta của log BigData. Code mới dùng <paramref name="extraMeta"/> cho thẳng.
+        /// <br/>Truyền <c>LevelStartParamV2</c> thì <c>preBoostersUsed</c> (booster chọn TRƯỚC ván) của nó
+        /// vào FIELD THẬT của dòng Start — đây là đường duy nhất của field đó qua Level Core. Key nào của
+        /// object này trùng field thật của dòng Start (<c>currentLevel</c>, <c>difficulty</c>…) thì bỏ: Level
+        /// Core tự tính các field đó.
         /// </param>
         /// <param name="extraMeta">
         /// Tham số thêm của game cho lần chơi — đi CẢ hai đường: extraMeta của log BigData
@@ -238,14 +284,6 @@ namespace Falcon.Modules.Level.Core
             GameEvent<(string currencyCode, double price)>.Register(EVENT_BUS_IAP_SUCCESS, OnPurchaseSuccess, null);
             new CSLevelStart(level, currentMd5LevelData, currentLevelParam) { extraMeta = extraMeta }.Send();
 
-            // `param` là kênh legacy từ đời PuzzleLevelLog — refactor 4938a6754 từng làm rơi dây,
-            // game truyền vào bị NUỐT IM LẶNG. Nối lại đúng nghĩa cũ: chảy vào extraMeta của log,
-            // cùng khuôn OnLevelResult; dict tường minh thắng khi trùng key.
-            var mergedMeta = param == null ? extraMeta : param.ToDictionary();
-            if (param != null && extraMeta != null)
-                foreach (var (key, value) in extraMeta)
-                    mergedMeta.Put(key, value);
-
             // Đi qua cửa chuẩn Level.OnStart: movesLimit/timeLimitSec là config của MÀN (§H6) nên
             // đứng ngoài param — cửa này tự khai bundle nhãn TRƯỚC khi enqueue, hết phải tự nhớ
             // thứ tự SetLevelConfig-rồi-Send. playTurnId do BigData sinh + cache khi log Start đi qua.
@@ -253,9 +291,40 @@ namespace Falcon.Modules.Level.Core
             {
                 currentLevel = level,
                 currentLevelId = CurrentMd5LevelDataParam,
+                levelDataId = CurrentLevelDataId,
                 difficulty = GetLevelDifficulty(level).ToString(),
-                extraMeta = mergedMeta
+                // Booster chọn TRƯỚC ván: Level Core không tự biết, nên chỉ lấy được từ param của game.
+                // Đi vào field thật để qua kiểm hợp lệ (bỏ số âm, so sổ mã booster) — trước 10/11 nó chỉ
+                // lọt lên dây qua extras, không qua kiểm gì.
+                preBoostersUsed = (param as LevelStartParamV2)?.preBoostersUsed,
+                extraMeta = MergeLegacyMeta(param, extraMeta)
             }, movesLimit, timeLimitSec);
+        }
+
+        /// <summary>
+        /// Gộp kênh legacy <paramref name="param"/> với <paramref name="extraMeta"/> tường minh thành extras
+        /// của dòng Start. Refactor 4938a6754 từng làm rơi dây kênh legacy (game truyền vào bị NUỐT IM
+        /// LẶNG) — nối lại đúng nghĩa cũ: chảy vào extraMeta, cùng khuôn <see cref="OnLevelResult"/>.
+        /// <br/>Key của <paramref name="param"/> trùng field thật của dòng Start thì BỎ (10/11): Level Core tự
+        /// tính các field đó, nên giá trị của object game chỉ có thể bị field thật đè — mà vẫn in một cảnh
+        /// báo trùng cột mỗi lần bắt đầu ván, cảnh báo giả làm dev quen tay bỏ qua cảnh báo thật.
+        /// <br/>Key trong <paramref name="extraMeta"/> tường minh thì KHÔNG lọc: game tự đặt tên trùng cột là
+        /// lỗi thật, cảnh báo phải giữ. Dict tường minh thắng khi trùng key.
+        /// </summary>
+        private static Dictionary<string, object> MergeLegacyMeta(
+            [CanBeNull] FParam param, [CanBeNull] Dictionary<string, object> extraMeta)
+        {
+            if (param == null) return extraMeta;
+
+            var merged = new Dictionary<string, object>();
+            foreach (var (key, value) in param.ToDictionary())
+                if (!FExtraMeta.StealsARealField(typeof(LevelStartParamV2), key))
+                    merged.Put(key, value);
+
+            if (extraMeta != null)
+                foreach (var (key, value) in extraMeta)
+                    merged.Put(key, value);
+            return merged;
         }
 
         public void SendLevelPlayingInfo(string info)
@@ -274,6 +343,7 @@ namespace Falcon.Modules.Level.Core
             var level = LevelData.Instance.level;
             param.currentLevel = level;
             param.currentLevelId = CurrentMd5LevelDataParam;
+            param.levelDataId = CurrentLevelDataId;
             param.difficulty = GetLevelDifficulty(level).ToString();
 
             FalconBigDataController.Level.OnHeartbeat(param);
@@ -359,6 +429,7 @@ namespace Falcon.Modules.Level.Core
                 {
                     currentLevel = level,
                     currentLevelId = CurrentMd5LevelDataParam,
+                levelDataId = CurrentLevelDataId,
                     difficulty = GetLevelDifficulty(level).ToString(),
                     duration = TimeSpan.FromSeconds(time),
                     boostersUsed = booster2Number,
@@ -373,6 +444,7 @@ namespace Falcon.Modules.Level.Core
                 {
                     currentLevel = level,
                     currentLevelId = CurrentMd5LevelDataParam,
+                levelDataId = CurrentLevelDataId,
                     difficulty = GetLevelDifficulty(level).ToString(),
                     duration = TimeSpan.FromSeconds(time),
                     boostersUsed = booster2Number,

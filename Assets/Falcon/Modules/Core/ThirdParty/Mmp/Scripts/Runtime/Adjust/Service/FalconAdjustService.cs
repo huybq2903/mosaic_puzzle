@@ -54,8 +54,10 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
             _setting = Resources.Load<SOMmpSetting>("SOMmpSetting");
             if (_setting == null)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(
                     "SOMmpSetting doesn't exists. Go to 'Falcon/Modules/ThirdParty/Mmp Settings' to config.");
+#endif
             }
             else
             {

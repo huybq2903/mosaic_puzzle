@@ -25,8 +25,8 @@ namespace Falcon.Modules.Core.BigData
         /// field <c>offerLabels</c> trên chính event offer.
         /// <br/>Cặp với <c>Label.IapOffer(...)</c> y như Level cặp với <c>Label.LevelPlayTurn(...)</c>:
         /// cái kia tả MỘT LẦN hiển thị, cái này tả thiết kế — đúng cho mọi lần offer đó hiện.
-        /// <br/>⚠ NGOÀI hợp đồng §D11 (đợt 1 mới mở level) — client gửi trước, cần loader khai
-        /// mapping cho field <c>offerLabels</c> thì dữ liệu mới vào hộp.
+        /// <br/>⚠ NGOÀI hợp đồng §D11 (đợt 1 mới mở level) — client gửi trước; kho CHƯA đọc field
+        /// <c>offerLabels</c> (loader xác nhận 12/11) nên dữ liệu chưa vào hộp.
         /// </summary>
         Offer
     }

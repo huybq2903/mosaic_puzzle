@@ -24,7 +24,7 @@ namespace Falcon.Helpers.Devkit
             return "IInit is being called";
         });
 
-        // [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         public static void Init()
         {
             var initializing = kLazyInit.Value;

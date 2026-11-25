@@ -3,8 +3,7 @@
     "rootNamespace": "Falcon.Modules.UI.Tooltip.Runtime",
     "references": [
         "Falcon.Helpers.EventBus",
-        "Unity.TextMeshPro",
-        "Unity.InputSystem"
+        "Unity.TextMeshPro"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

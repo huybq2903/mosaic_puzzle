@@ -6,7 +6,7 @@
 > (`com.fc.sdk.block.escape`, 951.125 dòng event ad).
 > Hướng dẫn nền về cả vòng đời ad: `Request-Mediation-AdLifecycle.md`.
 
-**Cần pin `falcon.modules.core.bigdata` ≥ 1.4.1** (bản có `OnShowAttempt` + `tier`). Hiện
+**Cần pin `falcon.modules.core.bigdata` ≥ 1.4.2** (bản có `OnShowAttempt` + `tier`). Hiện
 `package.json` đang pin `1.3.6`.
 
 ⚠ **Chưa publish vội**: loader phải khai báo 2 event mới trước, nếu không dữ liệu những ngày đầu
@@ -92,6 +92,9 @@ revenue để ra giá sàn), chỉ cần chở thêm xuống kết quả load.
 
 ## [ ] V4 — Gọi `OnShowAttempt` ở 3 cửa show
 
+> ⚠ **Sửa 13/11:** "Chỗ 1" (interstitial) **thay bằng S2 của `Request-Mediation-ShowGate.md`** — `OnShowAttempt` phải
+> đặt SAU luật của MediationMO, nếu không lần bị luật chặn sinh cả `show_attempt` lẫn `show_skipped`. Chỗ 2 và 3 giữ nguyên.
+
 Mốc mới: **game muốn chiếu ad**, bắn TRƯỚC khi kiểm tra kho, gọi ở **cả hai nhánh** (có ad và
 không có ad).
 
@@ -155,14 +158,18 @@ quảng cáo thì không phải "muốn chiếu mà hụt ad".
   và **không** có dòng `f_sdk_ad_show_data` nào theo sau.
 - Bất biến: số dòng `f_sdk_ad_show_attempt` ≥ số dòng `f_sdk_ad_show_data`.
 
-## [ ] V5 — Pin `package.json` lên BigData ≥ 1.4.1
+## [ ] V5 — Pin `package.json` lên BigData ≥ 1.4.2
 
 ```json
-"falcon.modules.core.bigdata": "1.4.1"
+"falcon.modules.core.bigdata": "1.4.2"
 ```
 
 Bản 1.3.6 đang pin không có `OnShowAttempt`, không có `tier`, và không có cơ chế tự xoay
 `adViewId` (từ 1.3.8). Bộ event ad v2 nằm ở **BigData 1.4.0**, bản vá khoá gộp ở **1.4.1**.
+
+⚠ Pin **1.4.2**, đừng pin 1.4.1: **1.4.1 không được publish** (bản vá khoá gộp nằm trong đó
+nhưng bản phát hành thực tế là 1.4.2, bản thêm điểm nghe cho module ngoài). Pin 1.4.1 là pin một
+số hiệu không có trên registry.
 
 ## [ ] V6 — `floor` của AdMob phải là số ỔN ĐỊNH trong một phiên
 
@@ -196,6 +203,45 @@ private static double? RoundFloorToGrid(double? floorUsd)
 
 **Kiểm:** chạy QA 30 phút, đếm số giá trị `floor` khác nhau của **cùng một ad unit** trong một lần
 gửi. Ra 1–3 là ổn; trên 5 thì nới lưới, hoặc chuyển hẳn sang cách 1.
+
+## [ ] V7 — Truyền `adUnitId` ở mốc impression *(thêm 19/10)*
+
+Các bạn **đã có giá trị này trong tay ở mọi callback** (đang gửi Firebase/MMP/game-server), chỉ là
+chưa truyền vào đường BigData — nên nó **chưa bao giờ vào kho dữ liệu**.
+
+```csharp
+// mốc impression — AdParam đã có sẵn field, chỉ cần điền
+FalconBigDataController.Ad.OnImpression(new AdParam
+{
+    type = …, adWhere = …, adRev = …,
+    adUnitId = adInfo.AdUnitIdentifier,   // ← thêm đúng dòng này
+    …
+});
+```
+
+**Vì sao đáng làm — hai việc chỉ chiều này mới làm được:**
+
+1. **Đối chiếu tiền.** Bảng kê của AppLovin/AdMob báo doanh thu **theo ad unit**. Không có chiều này
+   thì câu *"số trong kho có khớp tiền thật không"* không có cách trả lời — mà đó là câu data team
+   hỏi mỗi lần có nghi vấn doanh thu.
+2. **Game chạy nhiều unit cùng một format** (A/B giá sàn, tách theo vùng): hiện hai unit **trộn
+   thành một con số**, đúng con số người ta dựng A/B để so.
+
+**Phía BigData đã dọn sẵn (các bạn không phải lo):** khoá gộp cụm banner **đã có `adUnitId` từ
+19/10**, trước khi các bạn gửi. Nếu làm ngược lại — các bạn gửi trước, khoá cụm thêm sau — thì dòng
+per-impression (inter/reward) có mã, còn dòng gộp (banner) **không có**, và chart "doanh thu theo ad
+unit" cho banner ra **rỗng mà không lỗi, không warning**. Nên cứ gửi, không sinh ô trống nào.
+
+**Kiểm:** một phiên bật banner + inter → mọi dòng `f_sdk_ads_data` có `adUnitId`. Game nào có hai
+unit banner thì cụm ra **hai dòng** thay vì một (đúng, đó là thông tin chứ không phải phình).
+
+⚠ **Chỉ cần mốc impression.** Các mốc còn lại (request / show / close) hiện **không có field này**
+trong `AdViewParam` — nếu các bạn muốn truyền cả ở đó thì nói, BigData thêm field (nó mở đường cho
+việc tách nhiều ad unit cùng format, nhưng đó là việc sau).
+
+⚠ **`adInstanceName` thì KHÔNG cần thêm việc gì** — giữ nguyên hiện trạng. Nó **cố ý không** vào
+khoá gộp cụm: cardinality cao, mà phân tích waterfall thì dashboard của chính mediation làm tốt hơn
+(các bạn thấy cả lần load hỏng và no-fill, dữ liệu client chỉ thấy cái đã thắng).
 
 # ❓ Câu phải trả lời
 

@@ -50,6 +50,7 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
         private string _afAD;
         private bool _isRetargeting;
         private string _adgroup;
+        private string _installTime;
 
         public string AppsflyerID
         {
@@ -224,6 +225,16 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
             }
         }
 
+        private string InstallTime
+        {
+            get => _installTime;
+            set
+            {
+                _installTime = value;
+                GameData4Appsflyer.Instance.installTime = value;
+            }
+        }
+
 #if APPSFLYER_ENABLE
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoCreate()
@@ -256,8 +267,10 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
             _setting = Resources.Load<SOMmpSetting>("SOMmpSetting");
             if (_setting == null)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(
                     "SOMmpSetting doesn't exists. Go to 'Falcon/Modules/ThirdParty/Mmp Settings' to config.");
+#endif
             }
             else
             {
@@ -383,6 +396,11 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
                 Adgroup = adGroup;
             }
 
+            if (jsonObject.TryGetString("install_time", out var installTime))
+            {
+                InstallTime = installTime;
+            }
+
             GameData4Appsflyer.Instance.Save();
             GameData4Appsflyer.Instance.UpdateToServer();
         }
@@ -391,7 +409,9 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
 
         public void onConversionDataSuccess(string conversionData)
         {
+#if ENABLE_DEBUG_LOG
             Debug.Log("On onConversionDataSuccess");
+#endif
             ConversionData.Value = JObject.Parse(conversionData);
             UpdateConversionData();
             GameEvent.Emit(_FALCON_MMP_STARTED);
@@ -399,7 +419,9 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
 
         public void onConversionDataFail(string error)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError("error onConversionDataFail : " + error);
+#endif
             GameEvent.Emit(_FALCON_MMP_STARTED);
         }
 

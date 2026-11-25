@@ -1,0 +1,109 @@
+/* Khung chung của giao diện Level Editor: gốc, ô nhập, thanh cuộn, tooltip, toast, thanh tiến độ.
+   Lấy phần dùng chung trong 100-shell.uss của tool editor Bee Flow; phần riêng của tool Voxel bỏ đi. */
+
+.ed-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.ed-root TextField > .unity-base-text-field__input {
+    background-color: var(--field);
+    border-width: 1px;
+    border-color: var(--line-hi);
+    border-radius: 0;
+    color: var(--text);
+    font-size: 12px;
+    padding: 3px 6px 3px 6px;
+    overflow: hidden;
+    --unity-cursor-color: rgb(242, 180, 65);
+    --unity-selection-color: rgba(242, 180, 65, 0.35);
+}
+
+.ed-root TextField .unity-text-element {
+    color: var(--text);
+    font-size: 12px;
+}
+
+.ed-root TextField > .unity-base-text-field__input:hover { border-color: var(--accent-dim); }
+.ed-root TextField > .unity-base-text-field__input:focus { border-color: var(--accent); }
+
+.ed-root .unity-base-text-field__input--placeholder,
+.ed-root .unity-base-text-field__input--placeholder .unity-text-element {
+    color: var(--text-faint);
+    -unity-font-style: italic;
+}
+
+.unity-scroller--vertical { width: 10px; background-color: var(--clear); border-width: 0; }
+.unity-scroller--vertical .unity-base-slider__tracker { background-color: var(--clear); border-width: 0; }
+.unity-scroller--vertical .unity-base-slider__dragger {
+    background-color: var(--line-hi);
+    border-width: 0;
+    border-radius: 4px;
+    width: 6px;
+    left: 2px;
+    min-height: 28px;
+}
+.unity-scroller--vertical:hover .unity-base-slider__dragger { background-color: var(--text-faint); }
+.unity-scroller__low-button, .unity-scroller__high-button { display: none; }
+.unity-scroller--horizontal { height: 10px; background-color: var(--clear); border-width: 0; }
+.unity-scroller--horizontal .unity-base-slider__tracker { background-color: var(--clear); border-width: 0; }
+.unity-scroller--horizontal .unity-base-slider__dragger {
+    background-color: var(--line-hi);
+    border-width: 0;
+    border-radius: 4px;
+    height: 6px;
+    top: 2px;
+    min-width: 28px;
+}
+.unity-scroller--horizontal:hover .unity-base-slider__dragger { background-color: var(--text-faint); }
+.unity-scroller--vertical:active .unity-base-slider__dragger { background-color: var(--accent-dim); }
+
+.ed-tip {
+    position: absolute;
+    max-width: 340px;
+    padding: 5px 9px;
+    color: var(--text);
+    font-size: 13px;
+    white-space: normal;
+}
+
+.ed-toast {
+    position: absolute;
+    bottom: 60px;
+    left: 26%;
+    right: 26%;
+    flex-direction: row;
+    align-items: center;
+}
+
+.ed-bar {
+    flex-shrink: 0;
+    height: 8px;
+    border-radius: 4px;
+    background-color: var(--line);
+    overflow: hidden;
+}
+
+.ed-bar-fill {
+    height: 8px;
+    border-radius: 4px;
+    background-color: var(--accent);
+}
+
+.ed-spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
+    border-left-color: var(--accent);
+    border-top-color: var(--accent);
+    border-right-color: rgba(242, 180, 65, 0.15);
+    border-bottom-color: rgba(242, 180, 65, 0.15);
+    border-radius: 7px;
+    margin-right: 8px;
+    flex-shrink: 0;
+}

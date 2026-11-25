@@ -27,7 +27,7 @@ namespace Falcon.Modules.Core.BigData
     /// bất biến nào soi được (bài học <c>OnEligible</c> mồ côi của Master League).
     /// </summary>
     [Serializable]
-    public class FAdShowAttemptLog : AFalconLog
+    public class FAdShowAttemptLog : AFalconLog, IPerfPackCarrier
     {
         public AdType type;
 
@@ -36,6 +36,9 @@ namespace Falcon.Modules.Core.BigData
 
         /// <summary>Ngữ cảnh kích hoạt (bỏ trống nếu không biết).</summary>
         [FKey(RemoveIfNull = true)] public string adWhen;
+
+        /// <summary>Lượt chơi kích hoạt lần chiếu — xem <see cref="AdViewParam.triggerPlayTurnId"/>.</summary>
+        [FKey(RemoveIfNull = true)] public string triggerPlayTurnId;
 
         [FKey(RemoveIfNull = true)] public string adMediation;
 

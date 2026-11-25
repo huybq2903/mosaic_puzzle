@@ -34,7 +34,7 @@ public enum FsnOverlayPosition
 public class FsnAd
 {
 #if UNITY_ANDROID
-    private readonly AndroidJavaObject androidFsnAd;
+    private AndroidJavaObject androidFsnAd;
 
     // Keep proxy references to avoid GC breaking Java callbacks.
     private AndroidOnFsnNativeLoadListener _nativeLoadListenerProxy;
@@ -52,6 +52,10 @@ public class FsnAd
     private string _adUnitId = string.Empty;
     private int _countDownSec = 0;
     private long _delayForCountDown = 0;
+
+    // Sau Destroy(): mọi lời gọi xuống native bị bỏ qua (object Java đã Dispose, gọi tiếp là crash JNI).
+    private bool _destroyed;
+    public bool IsDestroyed => _destroyed;
 
     public int DebugStyleIndex => _styleIndex;
     public string DebugStyleName => GetStyleDebugName(_styleIndex);
@@ -140,11 +144,15 @@ public class FsnAd
             try
             {
                 androidFsnAd = new AndroidJavaObject("falcon.modules.core.thirdparty.mediation.fsnads.FsnAd");
+#if ENABLE_DEBUG_LOG
                 Debug.Log("[FsnAd] AndroidJavaObject created successfully");
+#endif
             }
             catch (Exception e)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError($"[FsnAd] Failed to create AndroidJavaObject: {e.Message}\n{e.StackTrace}");
+#endif
             }
         }
 #endif
@@ -162,7 +170,9 @@ public class FsnAd
             var go = new GameObject("FsnMainThreadDispatcher");
             _dispatcher = go.AddComponent<FsnMainThreadDispatcher>();
             UnityEngine.Object.DontDestroyOnLoad(go);
+#if ENABLE_DEBUG_LOG
             Debug.Log("[FsnAd] FsnMainThreadDispatcher created");
+#endif
         }
 
         _isInitialized = true;
@@ -200,7 +210,9 @@ public class FsnAd
             }
             catch (Exception e)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError($"[FsnAd] Error executing action on main thread: {e.Message}\n{e.StackTrace}");
+#endif
             }
         }
     }
@@ -211,9 +223,23 @@ public class FsnAd
         if (Application.platform != RuntimePlatform.Android)
             return false;
 
+        if (_destroyed)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogWarning($"[FsnAd] {methodName}() ignored - instance already destroyed");
+#endif
+
+            if (invokeFallbackCallback)
+                ExecuteOnMainThread(() => fallbackCallback?.Invoke());
+
+            return false;
+        }
+
         if (androidFsnAd == null)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] {methodName}() failed - androidFsnAd is null");
+#endif
 
             if (invokeFallbackCallback)
                 ExecuteOnMainThread(() => fallbackCallback?.Invoke());
@@ -243,6 +269,12 @@ public class FsnAd
     private static extern void FsnAdIOS_LoadNativeAd(int requestId,int ratio);
 
     [DllImport("__Internal")]
+    private static extern void FsnAdIOS_LoadNativeAdWithFloor(int requestId,int ratio,string bidFloorCents);
+
+    [DllImport("__Internal")]
+    private static extern double FsnAdIOS_GetLoadedRevenue(int requestId);
+
+    [DllImport("__Internal")]
     private static extern void FsnAdIOS_ShowNativeAd(int requestId,int layoutType,int overlayOpenStorePos,int overlayClosePos);
 
     [DllImport("__Internal")]
@@ -250,6 +282,9 @@ public class FsnAd
 
     [DllImport("__Internal")]
     private static extern bool FsnAdIOS_IsNativeAdReady(int requestId);
+
+    [DllImport("__Internal")]
+    private static extern void FsnAdIOS_DestroyNative(int requestId);
 
     public delegate void IOSLoadingCompletedDelegate(int requestId, int errorCode, string errorMessage);
     public delegate void IOSLoadingStartedDelegate(int requestId);
@@ -264,11 +299,22 @@ public class FsnAd
         if (_iosCallbacksRegistered)
             return;
 
-        FsnAdIOS_SetCallbacks(_iosLoadingCompletedDelegate,_iosLoadingStartedDelegate,_iosAdPaidDelegate,_iosAdCompletedDelegate);
-
-        _iosCallbacksRegistered = true;
-
-        Debug.Log("[FsnAd] iOS native callbacks registered");
+        // Thiếu symbol native (plugin chưa link) -> EntryPointNotFoundException. Không bọc thì ném ra
+        // từ constructor FsnAd, kéo theo cả luồng load của FsnAdManager.
+        try
+        {
+            FsnAdIOS_SetCallbacks(_iosLoadingCompletedDelegate,_iosLoadingStartedDelegate,_iosAdPaidDelegate,_iosAdCompletedDelegate);
+            _iosCallbacksRegistered = true;
+#if ENABLE_DEBUG_LOG
+            Debug.Log("[FsnAd] iOS native callbacks registered");
+#endif
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS SetCallbacks exception: {e.Message}\n{e.StackTrace}");
+#endif
+        }
     }
 
     private static IOSNativeCallbacks GetOrCreateIOSCallbacks(int requestId)
@@ -317,22 +363,38 @@ public class FsnAd
         try
         {
             androidFsnAd.Call("InitNative", (int)type, (int)ratio, adUnitId, countDownSec, delayForCountDown);
+#if ENABLE_DEBUG_LOG
             Debug.Log($"[FsnAd][Init] Android InitNative called. {GetDebugSummary()}");
+#endif
         }
         catch (Exception e)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] InitNative({type}) exception: {e.Message}\n{e.StackTrace}");
+#endif
         }
 #elif UNITY_IOS
+        if (_destroyed) return;
+
         var callbacks = GetOrCreateIOSCallbacks(_iosRequestId);
         callbacks.NativeType = type;
         callbacks.NativeRatio = ratio;
         callbacks.StyleIndex = styleIndex;
         callbacks.AdUnitId = adUnitId ?? string.Empty;
 
-        FsnAdIOS_InitNative(_iosRequestId,(int)type,(int)ratio,adUnitId,countDownSec,delayForCountDown);
-
-        Debug.Log($"[FsnAd][Init] iOS InitNative called. RequestId={_iosRequestId}, {GetDebugSummary()}");
+        try
+        {
+            FsnAdIOS_InitNative(_iosRequestId,(int)type,(int)ratio,adUnitId ?? string.Empty,countDownSec,delayForCountDown);
+#if ENABLE_DEBUG_LOG
+            Debug.Log($"[FsnAd][Init] iOS InitNative called. RequestId={_iosRequestId}, {GetDebugSummary()}");
+#endif
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS InitNative({type}) exception: {e.Message}\n{e.StackTrace}");
+#endif
+        }
 #endif
     }
 
@@ -352,13 +414,19 @@ public class FsnAd
             _nativeLoadListenerProxy =
                 new AndroidOnFsnNativeLoadListener(onLoadingCompleted, onLoadingStarted, onAdPaid);
             androidFsnAd.Call("SetNativeListener", _nativeLoadListenerProxy);
+#if ENABLE_DEBUG_LOG
             Debug.Log("[FsnAd] SetNativeListener() Android called");
+#endif
         }
         catch (Exception e)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] SetNativeListener() exception: {e.Message}\n{e.StackTrace}");
+#endif
         }
 #elif UNITY_IOS
+        if (_destroyed) return;
+
         EnsureIOSCallbacksRegistered();
 
         var callbacks = GetOrCreateIOSCallbacks(_iosRequestId);
@@ -371,12 +439,36 @@ public class FsnAd
         callbacks.StyleIndex = _styleIndex;
         callbacks.AdUnitId = _adUnitId;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log($"[FsnAd][Listener] iOS SetNativeListener called. RequestId={_iosRequestId}, {GetDebugSummary()}");
+#endif
 #endif
     }
 
-    public void LoadNativeAd()
+    // Revenue của FSN = doanh thu MỘT impression (USD), còn giá sàn AdMob (extras "rusd") theo eCPM tính
+    // bằng CENT -> ×1000 (eCPM) ×100 (cent). Cùng quy ước với AdmobBidAd.FormatBidFloor.
+    private const double _ImpressionsPerEcpm = 1000d;
+    private const double _CentsPerUsd = 100d;
+    private const double _MinBidFloorCents = 0.005d;
+
+    /// <summary>Giá sàn USD/impression -> chuỗi cent eCPM cho "rusd"; null nếu không cần set sàn.</summary>
+    public static string FormatBidFloorCents(double floorUsd)
     {
+        if (double.IsNaN(floorUsd) || double.IsInfinity(floorUsd) || floorUsd <= 0d) return null;
+
+        var cents = floorUsd * _ImpressionsPerEcpm * _CentsPerUsd;
+        if (cents < _MinBidFloorCents) return null;
+
+        return cents.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <param name="floorUsd">
+    /// Giá sàn theo USD / impression (cùng thang với <see cref="GetLoadedRevenue"/>). &lt;= 0 = không set sàn.
+    /// </param>
+    public void LoadNativeAd(double floorUsd = 0d)
+    {
+        var floorCents = FormatBidFloorCents(floorUsd);
+
 #if UNITY_ANDROID
         if (!IsAndroidReady(nameof(LoadNativeAd)))
             return;
@@ -384,21 +476,77 @@ public class FsnAd
         try
         {
             using AndroidJavaObject unityActivity = GetCurrentActivity();
-            androidFsnAd.Call("LoadNativeAd", unityActivity, (int)_nativeType, (int)_nativeRatio);
-            Debug.Log($"[FsnAd][Load] Android LoadNativeAd called. {GetDebugSummary()}");
+
+            if (floorCents == null)
+            {
+                androidFsnAd.Call("LoadNativeAd", unityActivity, (int)_nativeType, (int)_nativeRatio);
+            }
+            else
+            {
+                try
+                {
+                    androidFsnAd.Call("LoadNativeAd", unityActivity, (int)_nativeType, (int)_nativeRatio,
+                        floorCents);
+                }
+                catch (Exception e)
+                {
+                    // fsnlib.aar cũ chưa có overload có floor -> vẫn load, chỉ là không có sàn.
+#if ENABLE_DEBUG_LOG
+                    Debug.LogError($"[FsnAd] LoadNativeAd có floor không gọi được (aar cũ?) -> load KHÔNG floor. {e.Message}");
+#endif
+                    androidFsnAd.Call("LoadNativeAd", unityActivity, (int)_nativeType, (int)_nativeRatio);
+                }
+            }
+
+#if ENABLE_DEBUG_LOG
+            Debug.Log($"[FsnAd][Load] Android LoadNativeAd called. rusd={floorCents ?? "none"}, {GetDebugSummary()}");
+#endif
         }
         catch (Exception e)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] LoadNativeAd({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
         }
 #elif UNITY_IOS
-        FsnAdIOS_LoadNativeAd(_iosRequestId, (int)_nativeRatio);
-        Debug.Log($"[FsnAd][Load] iOS LoadNativeAd called. RequestId={_iosRequestId}, {GetDebugSummary()}");
+        if (_destroyed) return;
+
+        try
+        {
+            if (floorCents == null) FsnAdIOS_LoadNativeAd(_iosRequestId, (int)_nativeRatio);
+            else FsnAdIOS_LoadNativeAdWithFloor(_iosRequestId, (int)_nativeRatio, floorCents);
+
+#if ENABLE_DEBUG_LOG
+            Debug.Log($"[FsnAd][Load] iOS LoadNativeAd called. RequestId={_iosRequestId}, rusd={floorCents ?? "none"}, {GetDebugSummary()}");
+#endif
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS LoadNativeAd({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
+
+            // Không gọi được xuống native -> báo load fail để FsnAdManager nhả cờ isLoading.
+            int requestId = _iosRequestId;
+            string message = e.Message;
+            ExecuteOnMainThread(() =>
+            {
+                if (TryGetIOSCallbacks(requestId, out var callbacks))
+                {
+                    callbacks.OnLoadingCompleted?.Invoke(-1, message);
+                    RemoveIOSCallbacks(requestId);
+                }
+            });
+        }
 #endif
     }
 
+    /// <param name="closePositionWeights">
+    /// closePositionRatio theo thứ tự TopRight, TopLeft, BottomLeft, BottomRight.
+    /// Android dùng để chọn lại vị trí Close theo tỉ lệ nếu Close đè lên OpenStore/Skip.
+    /// </param>
     public void ShowNativeAd(Action<string> onAdCompleted, int overlayPositionOpenStoreValue = 0,
-        int overlayPositionCloseValue = 0)
+        int overlayPositionCloseValue = 0, int[] closePositionWeights = null)
     {
 #if UNITY_ANDROID
         if (!IsAndroidReady(nameof(ShowNativeAd), true, () => onAdCompleted?.Invoke("")))
@@ -409,19 +557,46 @@ public class FsnAd
             using AndroidJavaObject unityActivity = GetCurrentActivity();
             _nativeCompletedListenerProxy = new AndroidOnFsnNativeCompletedListener(onAdCompleted);
 
-            Debug.Log($"[FsnAd][Layout] Android ShowNativeAd requested. {GetDebugSummary()}, OpenStorePos={overlayPositionOpenStoreValue}({GetPositionDebugName(overlayPositionOpenStoreValue)}), ClosePos={overlayPositionCloseValue}({GetPositionDebugName(overlayPositionCloseValue)})");
+            bool hasCloseWeights = closePositionWeights != null && closePositionWeights.Length == 4;
 
-            androidFsnAd.Call("ShowNativeAd", unityActivity, (int)_nativeType, _styleIndex,
-                overlayPositionOpenStoreValue, overlayPositionCloseValue, _nativeCompletedListenerProxy);
+#if ENABLE_DEBUG_LOG
+            Debug.Log($"[FsnAd][Layout] Android ShowNativeAd requested. {GetDebugSummary()}, OpenStorePos={overlayPositionOpenStoreValue}({GetPositionDebugName(overlayPositionOpenStoreValue)}), ClosePos={overlayPositionCloseValue}({GetPositionDebugName(overlayPositionCloseValue)}), CloseWeights=[{(hasCloseWeights ? string.Join(",", closePositionWeights) : "none")}]");
+#endif
 
+            if (hasCloseWeights)
+            {
+                androidFsnAd.Call("ShowNativeAd", unityActivity, (int)_nativeType, _styleIndex,
+                    overlayPositionOpenStoreValue, overlayPositionCloseValue, closePositionWeights,
+                    _nativeCompletedListenerProxy);
+            }
+            else
+            {
+                androidFsnAd.Call("ShowNativeAd", unityActivity, (int)_nativeType, _styleIndex,
+                    overlayPositionOpenStoreValue, overlayPositionCloseValue, _nativeCompletedListenerProxy);
+            }
+
+#if ENABLE_DEBUG_LOG
             Debug.Log($"[FsnAd][Layout] Android ShowNativeAd bridge called. {GetDebugSummary()}");
+#endif
         }
         catch (Exception e)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] ShowNativeAd({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
             ExecuteOnMainThread(() => onAdCompleted?.Invoke(e.Message));
         }
 #elif UNITY_IOS
+        if (_destroyed)
+        {
+            // Show trên instance đã hủy vẫn phải trả callback đóng, không thì flow treo với overlay đen.
+#if ENABLE_DEBUG_LOG
+            Debug.LogWarning("[FsnAd] ShowNativeAd() ignored - instance already destroyed");
+#endif
+            ExecuteOnMainThread(() => onAdCompleted?.Invoke("destroyed"));
+            return;
+        }
+
         EnsureIOSCallbacksRegistered();
 
         var callbacks = GetOrCreateIOSCallbacks(_iosRequestId);
@@ -432,11 +607,27 @@ public class FsnAd
         callbacks.StyleIndex = _styleIndex;
         callbacks.AdUnitId = _adUnitId;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log($"[FsnAd][Layout] iOS ShowNativeAd requested. RequestId={_iosRequestId}, {GetDebugSummary()}, OpenStorePos={overlayPositionOpenStoreValue}({GetPositionDebugName(overlayPositionOpenStoreValue)}), ClosePos={overlayPositionCloseValue}({GetPositionDebugName(overlayPositionCloseValue)}), IsReady={IsNativeAdReady()}");
+#endif
 
-        FsnAdIOS_ShowNativeAd(_iosRequestId,_styleIndex,overlayPositionOpenStoreValue,overlayPositionCloseValue);
-
-        Debug.Log($"[FsnAd][Layout] iOS ShowNativeAd bridge called. RequestId={_iosRequestId}, Style={_styleIndex}({DebugStyleName})");
+        try
+        {
+            FsnAdIOS_ShowNativeAd(_iosRequestId,_styleIndex,overlayPositionOpenStoreValue,overlayPositionCloseValue);
+#if ENABLE_DEBUG_LOG
+            Debug.Log($"[FsnAd][Layout] iOS ShowNativeAd bridge called. RequestId={_iosRequestId}, Style={_styleIndex}({DebugStyleName})");
+#endif
+        }
+        catch (Exception e)
+        {
+            // Giống nhánh Android: show lỗi vẫn phải trả callback đóng, không thì flow treo với overlay đen.
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS ShowNativeAd({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
+            RemoveIOSCallbacks(_iosRequestId);
+            string message = e.Message;
+            ExecuteOnMainThread(() => onAdCompleted?.Invoke(message));
+        }
 #endif
     }
 
@@ -450,15 +641,32 @@ public class FsnAd
         {
             using AndroidJavaObject unityActivity = GetCurrentActivity();
             androidFsnAd.Call("HideNativeAd", (int)_nativeType);
+#if ENABLE_DEBUG_LOG
             Debug.Log("[FsnAd] HideNativeAd() Android called.");
+#endif
         }
         catch (Exception e)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] HideNativeAd({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
         }
 #elif UNITY_IOS
-        FsnAdIOS_HideNativeAd(_iosRequestId);
-        Debug.Log($"[FsnAd][Hide] iOS HideNativeAd called. RequestId={_iosRequestId}, {GetDebugSummary()}");
+        if (_destroyed) return;
+
+        try
+        {
+            FsnAdIOS_HideNativeAd(_iosRequestId);
+#if ENABLE_DEBUG_LOG
+            Debug.Log($"[FsnAd][Hide] iOS HideNativeAd called. RequestId={_iosRequestId}, {GetDebugSummary()}");
+#endif
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS HideNativeAd({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
+        }
 #endif
     }
 
@@ -474,13 +682,128 @@ public class FsnAd
         }
         catch (Exception e)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError($"[FsnAd] IsNativeAdReady({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
             return false;
         }
 #elif UNITY_IOS
-        return FsnAdIOS_IsNativeAdReady(_iosRequestId);
+        if (_destroyed) return false;
+
+        try
+        {
+            return FsnAdIOS_IsNativeAdReady(_iosRequestId);
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS IsNativeAdReady({_nativeType}) exception: {e.Message}\n{e.StackTrace}");
+#endif
+            return false;
+        }
 #else
         return false;
+#endif
+    }
+
+    /// <summary>
+    /// Revenue (USD / impression) của ad ĐÃ LOAD XONG, đọc từ response extras "ad_value_string" của
+    /// AdMob. 0 nếu chưa có ad / không đọc được (tài khoản chưa bật ad value, khác USD, native cũ...).
+    /// </summary>
+    public double GetLoadedRevenue()
+    {
+        double revenue = 0d;
+
+#if UNITY_ANDROID
+        if (!IsAndroidReady(nameof(GetLoadedRevenue)))
+            return 0d;
+
+        try
+        {
+            revenue = androidFsnAd.Call<double>("GetLoadedRevenue", (int)_nativeType);
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] GetLoadedRevenue({_nativeType}) exception (aar cũ?): {e.Message}");
+#endif
+            return 0d;
+        }
+#elif UNITY_IOS
+        if (_destroyed) return 0d;
+
+        try
+        {
+            revenue = FsnAdIOS_GetLoadedRevenue(_iosRequestId);
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogError($"[FsnAd] iOS GetLoadedRevenue exception: {e.Message}");
+#endif
+            return 0d;
+        }
+#endif
+
+        return double.IsNaN(revenue) || double.IsInfinity(revenue) || revenue < 0d ? 0d : revenue;
+    }
+
+    /// <summary>
+    /// Giải phóng ad native + object bridge khi FsnAdManager bỏ instance này (ad chưa show, load lỗi,
+    /// bị thay, hoặc đã show và đóng xong). Mỗi FsnAd chỉ dùng cho MỘT lượt load/show nên hủy xong là
+    /// xong. Ad đang hiển thị thì native bỏ qua, để luồng đóng tự dọn. Gọi nhiều lần không sao.
+    /// </summary>
+    public void Destroy()
+    {
+        if (_destroyed) return;
+        _destroyed = true;
+
+#if UNITY_ANDROID
+        if (Application.platform != RuntimePlatform.Android || androidFsnAd == null)
+            return;
+
+        try
+        {
+            androidFsnAd.Call("DestroyNativeAd");
+        }
+        catch (Exception e)
+        {
+            // fsnlib.aar cũ chưa có DestroyNativeAd -> vẫn Dispose phía C#.
+#if ENABLE_DEBUG_LOG
+            Debug.LogWarning($"[FsnAd] DestroyNativeAd không gọi được (aar cũ?): {e.Message}");
+#endif
+        }
+
+        try
+        {
+            androidFsnAd.Dispose();
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogWarning($"[FsnAd] Dispose AndroidJavaObject exception: {e.Message}");
+#endif
+        }
+
+        // Giữ nguyên các proxy listener: Java có thể vẫn gọi về (ad đang hiện báo paid/đóng).
+        androidFsnAd = null;
+#elif UNITY_IOS
+        try
+        {
+            FsnAdIOS_DestroyNative(_iosRequestId);
+        }
+        catch (Exception e)
+        {
+#if ENABLE_DEBUG_LOG
+            Debug.LogWarning($"[FsnAd] iOS DestroyNative exception: {e.Message}");
+#endif
+        }
+
+        // Còn chờ callback đóng (đang show) thì giữ lại để flow vẫn kết thúc được.
+        if (TryGetIOSCallbacks(_iosRequestId, out var callbacks) && callbacks.OnAdCompleted == null)
+        {
+            RemoveIOSCallbacks(_iosRequestId);
+        }
 #endif
     }
 
@@ -496,11 +819,15 @@ public class FsnAd
         {
             if (!TryGetIOSCallbacks(requestId, out var callbacks))
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogWarning($"[FsnAd] iOS OnLoadingCompleted ignored. Unknown RequestId={requestId}, ErrorCode={errorCode}, Msg={errorMessage}");
+#endif
                 return;
             }
 
+#if ENABLE_DEBUG_LOG
             Debug.Log($"[FsnAd][iOSCallback] OnLoadingCompleted. RequestId={requestId}, ErrorCode={errorCode}, Msg={errorMessage}, {callbacks.DebugSummary}");
+#endif
 
             callbacks.OnLoadingCompleted?.Invoke(errorCode, errorMessage);
 
@@ -520,11 +847,15 @@ public class FsnAd
         {
             if (!TryGetIOSCallbacks(requestId, out var callbacks))
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogWarning($"[FsnAd] iOS OnLoadingStarted ignored. Unknown RequestId={requestId}");
+#endif
                 return;
             }
 
+#if ENABLE_DEBUG_LOG
             Debug.Log($"[FsnAd][iOSCallback] OnLoadingStarted. RequestId={requestId}, {callbacks.DebugSummary}");
+#endif
 
             callbacks.OnLoadingStarted?.Invoke();
         });
@@ -537,11 +868,15 @@ public class FsnAd
         {
             if (!TryGetIOSCallbacks(requestId, out var callbacks))
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogWarning($"[FsnAd] iOS OnAdPaid ignored. Unknown RequestId={requestId}");
+#endif
                 return;
             }
 
+#if ENABLE_DEBUG_LOG
             Debug.Log($"[FsnAd][iOSCallback] OnAdPaid. RequestId={requestId}, Source={adSource}, Unit={adUnitId}, ValueMicros={valueMicros}, Currency={currencyCode}, {callbacks.DebugSummary}");
+#endif
 
             callbacks.OnAdPaid?.Invoke(adSource, adUnitId, valueMicros, currencyCode);
         });
@@ -554,11 +889,15 @@ public class FsnAd
         {
             if (!TryGetIOSCallbacks(requestId, out var callbacks))
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogWarning($"[FsnAd] iOS OnAdCompleted ignored. Unknown RequestId={requestId}, Msg={errorMessage}");
+#endif
                 return;
             }
 
+#if ENABLE_DEBUG_LOG
             Debug.Log($"[FsnAd][iOSCallback] OnAdCompleted. RequestId={requestId}, Msg={errorMessage}, {callbacks.DebugSummary}");
+#endif
 
             callbacks.OnAdCompleted?.Invoke(errorMessage);
 
@@ -628,7 +967,9 @@ public class FsnMainThreadDispatcher : MonoBehaviour
 {
     private void Awake()
     {
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FsnMainThreadDispatcher] Awake");
+#endif
     }
 
     private void Update()
@@ -638,6 +979,8 @@ public class FsnMainThreadDispatcher : MonoBehaviour
 
     private void OnDestroy()
     {
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FsnMainThreadDispatcher] OnDestroy");
+#endif
     }
 }

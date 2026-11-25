@@ -23,6 +23,13 @@ namespace Falcon.Modules.Core.BigData
     {
         public AdViewParam param;
 
+        /// <summary>
+        /// Lần XIN AD thứ mấy của format này TRONG PHIÊN (đếm từ 1) — SDK đếm, mediation không truyền.
+        /// <br/>Thêm 1.5.5 theo yêu cầu phía đọc số: eCPM và tỷ lệ fill đổi theo thứ tự này, mà
+        /// trước đó trên dây chỉ có <c>typeCount</c> là sổ theo ĐỜI (không phải theo phiên).
+        /// </summary>
+        [FKey(RemoveIfNull = true)] public int? sessionAdRequestIndex;
+
         [Preserve]
         public FAdRequestLog()
         {

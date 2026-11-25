@@ -13,6 +13,7 @@ using Falcon.Shared.PoolManager;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace Falcon.Shared.RewardFlow
 {
@@ -59,11 +60,13 @@ namespace Falcon.Shared.RewardFlow
             var delay = _config.GetFloat("delay", 0.1f);
             var durationBetween = _config.GetFloat("durationBetween", 0.1f);
             var durationTweenScale = _config.GetFloat("durationTweenScale", 0.3f);
-            var durationMove = _config.GetFloat("durationMove", 0.6f);
-            var valueScale = _config.GetFloat("valueScale", 1.3f);
-            var valueScaleWhileMove = _config.GetFloat("valueScaleWhileMove", 1f);
-            var delayAfterScale = _config.GetFloat("delayAfterScale", 0.2f);
-            var spacing = _config.GetFloat("spacing", 150);
+            var durationMoveMin = _config.GetFloat("durationMove", 0.6f);
+            var durationMoveMax = _config.GetFloat("durationMoveMax", 0.9f);
+            var moveSpeed = _config.GetFloat("moveSpeed", 2000f);
+            var valueScale = _config.GetFloat("valueScale", 1f);
+            var delayAfterScale = _config.GetFloat("delayAfterScale", 0.6f);
+            var spacing = _config.GetFloat("spacing", 200);
+            var curveMove = _config.GetCurve("curveMove");
 
             var tcs = this.GetCancellationTokenOnDestroy();
             var rewards = Data.rewards;
@@ -99,9 +102,12 @@ namespace Falcon.Shared.RewardFlow
 
                 if (_resources.TryGetValue(nameReward, out var resource))
                 {
-                    var localPos = transform.InverseTransformPoint(resource.icon.transform.position);
-                    seq = seq.Append(item.transform.DOLocalMove(localPos, durationMove).SetEase(Ease.InBack))
-                        .Join(item.transform.DOScale(Vector3.one * valueScaleWhileMove, durationMove).SetEase(Ease.OutQuad))
+                    // DOLocalMove đặt theo hệ toạ độ của cha item (Viewport), không phải gốc entry
+                    var localPos = item.transform.parent.InverseTransformPoint(resource.icon.transform.position);
+                    var durationMove = Mathf.Clamp(Vector2.Distance(item.transform.localPosition, localPos) / moveSpeed, durationMoveMin, durationMoveMax);
+                    var move = item.transform.DOLocalMove(localPos, durationMove);
+                    seq = seq.Append(curveMove != null ? move.SetEase(curveMove) : move.SetEase(Ease.InBack))
+                        .Join(item.transform.DOScale(Vector3.one * ArriveScale(item, resource), durationMove).SetEase(Ease.OutQuad))
                         .AppendCallback(() =>
                         {
                             if (!this || !item) return;
@@ -140,6 +146,35 @@ namespace Falcon.Shared.RewardFlow
         private bool IsAllItemReleased()
         {
             return _poolItem.CountActive == 0;
+        }
+
+        // So kích thước world vì entry và đích có thể nằm ở hai canvas scale khác nhau.
+        // Không đọc lossyScale của item: lúc dựng sequence nó đang ở scale 0, nên nhân tay localScale từ Icon lên tới item.
+        private static float ArriveScale(UIRewardItem item, UIResource resource)
+        {
+            var from = item.icon.rectTransform;
+            var to = resource.icon.rectTransform;
+
+            var scale = item.transform.parent ? (Vector2)item.transform.parent.lossyScale : Vector2.one;
+            for (var t = from.transform; t && t != item.transform; t = t.parent) scale = Vector2.Scale(scale, t.localScale);
+
+            var fromSize = DrawnSize(item.icon, Vector2.Scale(from.rect.size, scale));
+            var toSize = DrawnSize(resource.icon, Vector2.Scale(to.rect.size, to.lossyScale));
+            if (fromSize.x <= 0f || fromSize.y <= 0f) return 1f;
+
+            return Mathf.Min(toSize.x / fromSize.x, toSize.y / fromSize.y);
+        }
+
+        // preserveAspect thì sprite chỉ chiếm một phần rect, so theo phần thực vẽ.
+        private static Vector2 DrawnSize(Image image, Vector2 size)
+        {
+            if (!image.preserveAspect || !image.sprite || size.y <= 0f) return size;
+
+            var spriteSize = image.sprite.rect.size;
+            if (spriteSize.y <= 0f) return size;
+
+            var aspect = spriteSize.x / spriteSize.y;
+            return size.x / size.y > aspect ? new Vector2(size.y * aspect, size.y) : new Vector2(size.x, size.x / aspect);
         }
     }
 

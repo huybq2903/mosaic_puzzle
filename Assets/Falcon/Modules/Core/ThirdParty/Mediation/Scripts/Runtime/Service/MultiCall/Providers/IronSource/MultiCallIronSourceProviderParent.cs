@@ -296,14 +296,16 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                         index = b.numRequest,
                         revenueUsd = a.eCpm,
                         time = new DateTimeOffset(TimeUtils.UTCNow).ToUnixTimeMilliseconds(),
-                        adMediation = "Max",
+                        adMediation = "IronSource",
                         adNetwork = a.networkName
                     };
                     b.adSuccessInfos.Add(c);
                 }
                 else
                 {
+#if ENABLE_DEBUG_LOG
                     Debug.LogError("don't exists adRequestLogItem rewarded id : " + adInfo.AdUnitId);
+#endif
                 }
             }
 
@@ -570,14 +572,16 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                         index = b.numRequest,
                         revenueUsd = a.eCpm,
                         time = new DateTimeOffset(TimeUtils.UTCNow).ToUnixTimeMilliseconds(),
-                        adMediation = "Max",
+                        adMediation = "IronSource",
                         adNetwork = a.networkName
                     };
                     b.adSuccessInfos.Add(c);
                 }
                 else
                 {
+#if ENABLE_DEBUG_LOG
                     Debug.LogError("don't exists adRequestLogItem interstitial id : " + adInfo.AdUnitId);
+#endif
                 }
             }
 

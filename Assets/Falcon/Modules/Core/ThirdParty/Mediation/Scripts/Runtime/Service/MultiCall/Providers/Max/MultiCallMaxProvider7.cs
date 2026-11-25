@@ -8,6 +8,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Falcon.Helpers.Devkit;
+using Falcon.Modules.Core.BigData;
 using Falcon.Modules.Core.RemoteConfigCms;
 using Falcon.Modules.Core.Utils.Time.Runtime;
 using UnityEngine;
@@ -17,7 +19,7 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
     /// <summary>
     /// Module multi call adUnitId for max sdk
     /// cập nhật giá trị valueDefault khi load xong qc
-    /// hệ số bắt đầu từ 1.0
+    /// hệ số mỗi bậc lấy đúng từ remote config; fail liên tục thì giảm 0.1, chặn dưới ở hệ số config bậc trước
     /// </summary>
     public class MultiCallMaxProvider7 : MultiCallMaxProviderParent<MultiCallMaxProvider7>
     {
@@ -28,48 +30,72 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         private readonly List<float> _listMultiplierInterstitialDefault = new();
         private int _defaultCountRewarded;
         private int _defaultCountInterstitial;
-        private bool _isBatchRunningRewarded;
-        private bool _isBatchRunningInterstitial;
-        private int _currentAnchorIndexRewarded = -1;
-        private int _currentAnchorIndexInterstitial = -1;
         private int _periodDecreaseFloor;
-        private const int _GROUP_COUNT = 3; // 3 multiplier liên tiếp
+        private const int _GROUP_COUNT = 3; // tối đa 3 bậc floor bận (đang load / chờ retry) cùng lúc
+
+        private FloorQueue _rewardedFloors;
+        private FloorQueue _interstitialFloors;
+
+        private FloorQueue RewardedFloors =>
+            _rewardedFloors ??= new FloorQueue("Reward", () => MultiCall.Instance.dictionaryRewarded,
+                LoadRewardedAd, a => Describe(a, _defaultCountRewarded));
+
+        private FloorQueue InterstitialFloors =>
+            _interstitialFloors ??= new FloorQueue("Inter", () => MultiCall.Instance.dictionaryInterstitial,
+                LoadInterstitialAd, a => Describe(a, _defaultCountInterstitial));
+
+        private const string _LOG_TAG = "[MAX algorithm 7] ";
+
+        private static void Log(string message) => MediationManager.Instance.DebugLog(_LOG_TAG + message);
+
+        /// <summary>"DEFAULT #1 adUnit=..." hoặc "bậc 2 x1.5 adUnit=..." (bậc floor đánh số từ 1).</summary>
+        private static string Describe(MultiCall.AdTypeMultiCall a, int defaultCount)
+        {
+            var level = a.multiplier == 0
+                ? "DEFAULT #" + (a.index + 1)
+                : "bậc " + (a.index - defaultCount + 1) + " x" +
+                  a.multiplier.ToString("0.##", CultureInfo.InvariantCulture);
+            return level + " adUnit=" + a.adUnitId;
+        }
+
+        //floor = mức sàn eCPM (USD) gửi MAX; 0 = id default không set sàn
+        private static string Floor(double floorEcpm)
+            => floorEcpm > 0d ? "$" + floorEcpm.ToString("F4", CultureInfo.InvariantCulture) + " eCPM" : "không set";
 
         #region rewarded
 
+        //rewarded vừa đóng (đã rời kho)
         protected override void UpdateMultiplier(string adUnitId)
         {
-            //cập nhật lại multiplier gốc cho adUnitId này
-            if (MultiCall.Instance.dictionaryRewarded.ContainsKey(adUnitId))
-            {
-                var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryRewarded);
-                for (int i = _defaultCountRewarded; i < list.Count; i++)
-                {
-                    if (list[i].Key.Equals(adUnitId))
-                    {
-                        list[i].Value.multiplier = _listMultiplierRewardedDefault[i - _defaultCountRewarded];
-                        break;
-                    }
-                }
+            if (!MultiCall.Instance.dictionaryRewarded.TryGetValue(adUnitId, out var a)) return;
 
-                MultiCall.Instance.DelayCall(1, adUnitId, LoadRewardedAd);
+            var tier = a.index - _defaultCountRewarded;
+            if (tier >= 0 && tier < _listMultiplierRewardedDefault.Count)
+            {
+                //load lại sau show -> trả về đúng multiplier gốc của remote config
+                a.multiplier = _listMultiplierRewardedDefault[tier];
+                //KHÔNG load lại bậc này ngay: chỉ load khi còn chỗ (xem FloorQueue)
+                RewardedFloors.Refill();
+                return;
             }
 
-            if (MultiCall.Instance.dictionaryInterstitial.ContainsKey(adUnitId))
-            {
-                var listInter =
-                    MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryInterstitial);
-                for (int i = _defaultCountRewarded; i < listInter.Count; i++)
-                {
-                    if (listInter[i].Key.Equals(adUnitId))
-                    {
-                        listInter[i].Value.multiplier = _listMultiplierInterstitialDefault[i - _defaultCountRewarded];
-                        break;
-                    }
-                }
+            MultiCall.Instance.DelayCall(1, adUnitId, LoadRewardedAd);
+        }
 
-                MultiCall.Instance.DelayCall(1, adUnitId, LoadInterstitialAd);
+        //interstitial vừa đóng (đã rời kho) — xem UpdateMultiplier
+        protected override void UpdateMultiplierInterstitial(string adUnitId)
+        {
+            if (!MultiCall.Instance.dictionaryInterstitial.TryGetValue(adUnitId, out var a)) return;
+
+            var tier = a.index - _defaultCountInterstitial;
+            if (tier >= 0 && tier < _listMultiplierInterstitialDefault.Count)
+            {
+                a.multiplier = _listMultiplierInterstitialDefault[tier];
+                InterstitialFloors.Refill();
+                return;
             }
+
+            MultiCall.Instance.DelayCall(1, adUnitId, LoadInterstitialAd);
         }
 
         protected override void InternalLoadRewardedLoadFailed(string adUnitId)
@@ -95,32 +121,21 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                     time = 0;
                 }
 
-                MediationManager.Instance.DebugLog("InternalLoadRewardedLoadFailed adUnitId : " + adUnitId + " x " +
-                                                   a.multiplier);
                 var diff = (TimeUtils.UTCNow - a.timeLoad).TotalSeconds;
-                MediationManager.Instance.DebugLog("time diff: " + diff + " - attemp : " + countAttempt);
+                Log($"LOAD FAIL Reward {Describe(a, _defaultCountRewarded)} floor={Floor(a.currentFloor)} " +
+                    $"fail liên tiếp={countAttempt} sau {diff:F1}s");
 
-                if (_listMultiplierRewardedDefault.Count > 0 && countAttempt % _periodDecreaseFloor == 0)
-                {
-                    if (a.index == _defaultCountRewarded)
-                    {
-                        a.multiplier = Mathf.Max(a.multiplier - 0.1f, 1f);
-                    }
-                    else if (a.index > _defaultCountRewarded)
-                    {
-                        var b = MultiCall.Instance.GetAdTypeMultiCallByIndex(a.index - 1,
-                            MultiCall.Instance.dictionaryRewarded);
-                        if (b != null)
-                        {
-                            a.multiplier = Mathf.Max(a.multiplier - 0.1f, b.multiplier);
-                        }
-                    }
-                }
+                DecreaseMultiplier(a, countAttempt, _defaultCountRewarded, _listMultiplierRewardedDefault);
+
+                var retryDelay = (float)time;
+                if (a.multiplier == 0) Log($"  -> DEFAULT retry sau {retryDelay}s");
+                //bậc floor: retry hay nhả chỗ do FloorQueue quyết
+                if (a.multiplier != 0) RewardedFloors.OnFloorLoadFailed(adUnitId, retryDelay);
+                else MultiCall.Instance.DelayCall(retryDelay, adUnitId, LoadRewardedAd);
+                return;
             }
 
-            var retryDelay = (float)time;
-            MediationManager.Instance.DebugLog("InternalLoadRewardedLoadFailed delay time : " + retryDelay);
-            MultiCall.Instance.DelayCall(retryDelay, adUnitId, LoadRewardedAd);
+            MultiCall.Instance.DelayCall(time, adUnitId, LoadRewardedAd);
         }
 
         private void ReloadDefaultCountRewarded()
@@ -143,19 +158,17 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             if (_listMultiplierRewardedDefault.Count == 0)
             {
                 ReloadDefaultCountRewarded();
-                var countMultiplierGreaterThan0 = MultiCall.Instance.dictionaryRewarded.Count - _defaultCountRewarded;
-                for (int i = 0; i < countMultiplierGreaterThan0; i++)
-                {
-                    _listMultiplierRewardedDefault.Add(1f + i * 0.5f);
-                }
-
+                CaptureConfigMultipliers(MultiCall.Instance.dictionaryRewarded, _defaultCountRewarded,
+                    _listMultiplierRewardedDefault);
                 _periodDecreaseFloor = FConfigControllerCms.Instance.Config<MultiCallConfig>().periodDecreaseFloor;
             }
 
             //load 1 id default
             //delay 5,10s để load id default tiếp theo
             //nếu đã load được id với ecpm cao, thì ko load id thấp
-            MediationManager.Instance.DebugLog("LoadRewarded max provider 7");
+            Log($"LoadRewarded: {_defaultCountRewarded} id default, {_listMultiplierRewardedDefault.Count} bậc floor " +
+                $"multipliers=[{string.Join(", ", _listMultiplierRewardedDefault)}] " +
+                $"periodDecreaseFloor={_periodDecreaseFloor}");
             var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryRewarded);
             for (int i = 0; i < list.Count; i++)
             {
@@ -171,37 +184,20 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
         }
 
-        private void ResetAnchorIndexRewarded()
-        {
-            //reset giá trị _currentAnchorIndexRewarded dành cho trường hợp show rewarded có multiplier cao nhất
-            //tìm index có qc với multiplier cao nhất
-            _currentAnchorIndexRewarded = -1;
-            var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryRewarded);
-            for (int i = list.Count - 1; i >= _defaultCountRewarded; i--)
-            {
-                if (list[i].Value.multiplier > 0 && list[i].Value.eCpm >= 0)
-                {
-                    _currentAnchorIndexRewarded = i - _defaultCountRewarded;
-                    MediationManager.Instance.DebugLog("current anchor index : " + _currentAnchorIndexRewarded);
-                    break;
-                }
-            }
-        }
-
         protected override void InternalLoadRewarded(string adUnitId)
         {
             if (MultiCall.Instance.dictionaryRewarded.ContainsKey(adUnitId))
             {
                 var a = MultiCall.Instance.dictionaryRewarded[adUnitId];
-                // ResetAnchorIndexRewarded();
-                MediationManager.Instance.DebugLog("Internal Load Rewarded : " + adUnitId + " x " + a.multiplier);
-                MediationManager.Instance.DebugLog("value default : " + MultiCall.Instance.valueDefaultRewarded);
-                MediationManager.Instance.DebugLog("floor : " +
-                                                   (a.multiplier * MultiCall.Instance.valueDefaultRewarded)
-                                                   .ToString(CultureInfo.InvariantCulture));
-                MaxSdk.SetRewardedAdExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, (a.multiplier *
-                        MultiCall.Instance.valueDefaultRewarded * MultiCall.MULTIPLIER)
-                    .ToString(CultureInfo.InvariantCulture));
+                var currentFloor = a.multiplier * MultiCall.Instance.valueDefaultRewarded * MultiCall.MULTIPLIER;
+                //countLoadAttempt được cộng SAU hàm này -> lúc này = số lần fail liên tiếp trước lần thử này
+                Log($"LOAD Reward {Describe(a, _defaultCountRewarded)} floor={Floor(currentFloor)} " +
+                    $"(valueDefault=${MultiCall.Instance.valueDefaultRewarded:F6}) " +
+                    $"fail liên tiếp={a.countLoadAttempt} -> lần thử #{a.countLoadAttempt + 1}");
+                MaxSdk.SetRewardedAdExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, currentFloor.ToString(CultureInfo.InvariantCulture));
+                a.currentFloor = currentFloor;
+                AdViewRequestGate.Open(AdType.Reward, "Max", AdViewRequestGate.MultiCallAlgorithm(GetIndex()));
+                SnapshotRequestTier(MultiCall.Instance.dictionaryRewarded, adUnitId);
                 MaxSdk.LoadRewardedAd(adUnitId);
             }
         }
@@ -212,66 +208,24 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             if (MultiCall.Instance.dictionaryRewarded.ContainsKey(adUnitId))
             {
                 var a = MultiCall.Instance.dictionaryRewarded[adUnitId];
+                Log($"LOAD OK Reward {Describe(a, _defaultCountRewarded)} floor={Floor(a.currentFloor)} " +
+                    $"revenue=${adInfo.Revenue:F6} network={adInfo.NetworkName} " +
+                    $"fail trước đó={a.failCountBeforeLoad}");
+
                 if (a.multiplier == 0)
-                    MultiCall.Instance.valueDefaultRewarded = adInfo.Revenue;
-
-                if (a.multiplier == 0 && _isBatchRunningRewarded)
                 {
-                    return;
+                    MultiCall.Instance.valueDefaultRewarded = LoadedRevenue(adInfo);
+                    RewardedFloors.started = true;
                 }
 
-                var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryRewarded);
-                ResetAnchorIndexRewarded();
-                for (int i = _defaultCountRewarded; i < list.Count; i++)
-                {
-                    if (list[i].Key.Equals(adUnitId))
-                    {
-                        if (_currentAnchorIndexRewarded > i - _defaultCountRewarded) return;
-                        _currentAnchorIndexRewarded = i - _defaultCountRewarded;
-                        MediationManager.Instance.DebugLog("_currentAnchorIndexRewarded : " +
-                                                           _currentAnchorIndexRewarded);
-                    }
-                }
-
-                _isBatchRunningRewarded = true;
-                int startIndex = _currentAnchorIndexRewarded + 1;
-                if (startIndex >= _listMultiplierRewardedDefault.Count)
-                {
-                    MediationManager.Instance.DebugLog("Reached final multiplier. Flow completed.");
-                    return;
-                }
-
-                MediationManager.Instance.DebugLog("startIndex : " + startIndex);
-                int endIndexExclusive = Mathf.Min(startIndex + _GROUP_COUNT, _listMultiplierRewardedDefault.Count);
-                for (int i = startIndex; i < endIndexExclusive; i++)
-                {
-                    var multiplier = _listMultiplierRewardedDefault[i];
-                    //tìm trong dictionary element đang available, nếu có multiplier nằm trong nhóm đang đợi load thì bỏ qua
-                    bool existsMultiplier = false;
-                    for (int j = list.Count - 1; j >= _defaultCountRewarded + i; j--)
-                    {
-                        if (list[j].Value.eCpm >= 0)
-                        {
-                            MediationManager.Instance.DebugLog("đã tồn tại : x" + list[i].Value.multiplier + " >= x" +
-                                                               multiplier);
-                            existsMultiplier = true;
-                            break;
-                        }
-                    }
-
-                    //đã tồn tại mức này
-                    //bỏ qua
-                    if (existsMultiplier) continue;
-
-                    //tìm trong dictionary id tương ứng để load
-                    if (!list[i + _defaultCountRewarded].Value.isWaiting &&
-                        list[i + _defaultCountRewarded].Value.eCpm == -100)
-                    {
-                        MultiCall.Instance.DelayCall((i - startIndex) * 0.1f, list[i + _defaultCountRewarded].Key,
-                            LoadRewardedAd);
-                    }
-                }
+                //default xong lần đầu / một bậc vừa có qc (nhả chỗ) -> lấp lại
+                RewardedFloors.Refill();
             }
+        }
+
+        protected override bool CanLoadRewarded(MultiCall.AdTypeMultiCall a)
+        {
+            return RewardedFloors.CanLoad(a);
         }
 
         #endregion
@@ -301,32 +255,21 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                     time = 0;
                 }
 
-                // MediationManager.Instance.DebugLog("InternalLoadInterstitialLoadFailed adUnitId : " + adUnitId + " x " +
-                // a.multiplier);
                 var diff = (TimeUtils.UTCNow - a.timeLoad).TotalSeconds;
-                // MediationManager.Instance.DebugLog("time diff: " + diff + " - attemp : " + countAttempt);
+                Log($"LOAD FAIL Inter {Describe(a, _defaultCountInterstitial)} floor={Floor(a.currentFloor)} " +
+                    $"fail liên tiếp={countAttempt} sau {diff:F1}s");
 
-                if (_listMultiplierInterstitialDefault.Count > 0 && countAttempt % _periodDecreaseFloor == 0)
-                {
-                    if (a.index == _defaultCountInterstitial)
-                    {
-                        a.multiplier = Mathf.Max(a.multiplier - 0.1f, 1f);
-                    }
-                    else if (a.index > _defaultCountInterstitial)
-                    {
-                        var b = MultiCall.Instance.GetAdTypeMultiCallByIndex(a.index - 1,
-                            MultiCall.Instance.dictionaryInterstitial);
-                        if (b != null)
-                        {
-                            a.multiplier = Mathf.Max(a.multiplier - 0.1f, b.multiplier);
-                        }
-                    }
-                }
+                DecreaseMultiplier(a, countAttempt, _defaultCountInterstitial, _listMultiplierInterstitialDefault);
+
+                var retryDelay = (float)time;
+                if (a.multiplier == 0) Log($"  -> DEFAULT retry sau {retryDelay}s");
+                //bậc floor: retry hay nhả chỗ do FloorQueue quyết
+                if (a.multiplier != 0) InterstitialFloors.OnFloorLoadFailed(adUnitId, retryDelay);
+                else MultiCall.Instance.DelayCall(retryDelay, adUnitId, LoadInterstitialAd);
+                return;
             }
 
-            var retryDelay = (float)time;
-            // MediationManager.Instance.DebugLog("InternalLoadInterstitialLoadFailed delay time : " + retryDelay);
-            MultiCall.Instance.DelayCall(retryDelay, adUnitId, LoadInterstitialAd);
+            MultiCall.Instance.DelayCall(time, adUnitId, LoadInterstitialAd);
         }
 
         private void ReloadDefaultCountInterstitial()
@@ -349,18 +292,19 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             if (_listMultiplierInterstitialDefault.Count == 0)
             {
                 ReloadDefaultCountInterstitial();
-                var countMultiplierGreaterThan0 =
-                    MultiCall.Instance.dictionaryInterstitial.Count - _defaultCountInterstitial;
-                for (int i = 0; i < countMultiplierGreaterThan0; i++)
-                {
-                    _listMultiplierInterstitialDefault.Add(1f + i * 0.5f);
-                }
+                CaptureConfigMultipliers(MultiCall.Instance.dictionaryInterstitial, _defaultCountInterstitial,
+                    _listMultiplierInterstitialDefault);
+                //trước đây chỉ đọc ở LoadRewarded -> inter chạy trước thì = 0, phép % chia cho 0
+                _periodDecreaseFloor = FConfigControllerCms.Instance.Config<MultiCallConfig>().periodDecreaseFloor;
             }
 
             //load 1 id default
             //delay 5,10s để load id default tiếp theo
             //nếu đã load được id với ecpm cao, thì ko load id thấp
-            // MediationManager.Instance.DebugLog("LoadInterstitial max provider 7");
+            Log($"LoadInterstitial: {_defaultCountInterstitial} id default, " +
+                $"{_listMultiplierInterstitialDefault.Count} bậc floor " +
+                $"multipliers=[{string.Join(", ", _listMultiplierInterstitialDefault)}] " +
+                $"periodDecreaseFloor={_periodDecreaseFloor}");
             var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryInterstitial);
             for (int i = 0; i < list.Count; i++)
             {
@@ -376,37 +320,19 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
         }
 
-        private void ResetAnchorIndexInterstitial()
-        {
-            //reset giá trị _currentAnchorIndexInterstitial dành cho trường hợp show Interstitial có multiplier cao nhất
-            //tìm index có qc với multiplier cao nhất
-            _currentAnchorIndexInterstitial = -1;
-            var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryInterstitial);
-            for (int i = list.Count - 1; i >= _defaultCountInterstitial; i--)
-            {
-                if (list[i].Value.multiplier > 0 && list[i].Value.eCpm >= 0)
-                {
-                    _currentAnchorIndexInterstitial = i - _defaultCountInterstitial;
-                    // MediationManager.Instance.DebugLog("current anchor index : " + _currentAnchorIndexInterstitial);
-                    break;
-                }
-            }
-        }
-
         protected override void InternalLoadInterstitial(string adUnitId)
         {
             if (MultiCall.Instance.dictionaryInterstitial.ContainsKey(adUnitId))
             {
                 var a = MultiCall.Instance.dictionaryInterstitial[adUnitId];
-                // ResetAnchorIndexInterstitial();
-                // MediationManager.Instance.DebugLog("Internal Load Interstitial : " + adUnitId + " x " + a.multiplier);
-                // MediationManager.Instance.DebugLog("value default : " + MultiCall.Instance.valueDefaultInterstitial);
-                // MediationManager.Instance.DebugLog("floor : " +
-                //                                    (a.multiplier * MultiCall.Instance.valueDefaultInterstitial)
-                //                                    .ToString(CultureInfo.InvariantCulture));
-                MaxSdk.SetInterstitialExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, (a.multiplier *
-                        MultiCall.Instance.valueDefaultInterstitial * MultiCall.MULTIPLIER)
-                    .ToString(CultureInfo.InvariantCulture));
+                var currentFloor = a.multiplier * MultiCall.Instance.valueDefaultInterstitial * MultiCall.MULTIPLIER;
+                Log($"LOAD Inter {Describe(a, _defaultCountInterstitial)} floor={Floor(currentFloor)} " +
+                    $"(valueDefault=${MultiCall.Instance.valueDefaultInterstitial:F6}) " +
+                    $"fail liên tiếp={a.countLoadAttempt} -> lần thử #{a.countLoadAttempt + 1}");
+                MaxSdk.SetInterstitialExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, currentFloor.ToString(CultureInfo.InvariantCulture));
+                a.currentFloor = currentFloor;
+                AdViewRequestGate.Open(AdType.Interstitial, "Max", AdViewRequestGate.MultiCallAlgorithm(GetIndex()));
+                SnapshotRequestTier(MultiCall.Instance.dictionaryInterstitial, adUnitId);
                 MaxSdk.LoadInterstitial(adUnitId);
             }
         }
@@ -417,69 +343,266 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             if (MultiCall.Instance.dictionaryInterstitial.ContainsKey(adUnitId))
             {
                 var a = MultiCall.Instance.dictionaryInterstitial[adUnitId];
+                Log($"LOAD OK Inter {Describe(a, _defaultCountInterstitial)} floor={Floor(a.currentFloor)} " +
+                    $"revenue=${adInfo.Revenue:F6} network={adInfo.NetworkName} " +
+                    $"fail trước đó={a.failCountBeforeLoad}");
+
                 if (a.multiplier == 0)
-                    MultiCall.Instance.valueDefaultInterstitial = adInfo.Revenue;
-
-                if (a.multiplier == 0 && _isBatchRunningInterstitial)
                 {
-                    return;
+                    MultiCall.Instance.valueDefaultInterstitial = LoadedRevenue(adInfo);
+                    InterstitialFloors.started = true;
                 }
 
-                var list = MultiCall.Instance.GetDictionarySortedByIndex(MultiCall.Instance.dictionaryInterstitial);
-                ResetAnchorIndexInterstitial();
-                for (int i = _defaultCountInterstitial; i < list.Count; i++)
-                {
-                    if (list[i].Key.Equals(adUnitId))
-                    {
-                        if (_currentAnchorIndexInterstitial > i - _defaultCountInterstitial) return;
-                        _currentAnchorIndexInterstitial = i - _defaultCountInterstitial;
-                        // MediationManager.Instance.DebugLog("_currentAnchorIndexInterstitial : " +
-                        //                                    _currentAnchorIndexInterstitial);
-                    }
-                }
-
-                _isBatchRunningInterstitial = true;
-                int startIndex = _currentAnchorIndexInterstitial + 1;
-                if (startIndex >= _listMultiplierInterstitialDefault.Count)
-                {
-                    // MediationManager.Instance.DebugLog("Reached final multiplier. Flow completed.");
-                    return;
-                }
-
-                // MediationManager.Instance.DebugLog("startIndex : " + startIndex);
-                int endIndexExclusive = Mathf.Min(startIndex + _GROUP_COUNT, _listMultiplierInterstitialDefault.Count);
-                for (int i = startIndex; i < endIndexExclusive; i++)
-                {
-                    var multiplier = _listMultiplierInterstitialDefault[i];
-                    //tìm trong dictionary element đang available, nếu có multiplier nằm trong nhóm đang đợi load thì bỏ qua
-                    bool existsMultiplier = false;
-                    for (int j = list.Count - 1; j >= _defaultCountInterstitial + i; j--)
-                    {
-                        if (list[j].Value.eCpm >= 0)
-                        {
-                            // MediationManager.Instance.DebugLog("đã tồn tại : x" + list[i].Value.multiplier + " >= x" +
-                            //                                    multiplier);
-                            existsMultiplier = true;
-                            break;
-                        }
-                    }
-
-                    //đã tồn tại mức này
-                    //bỏ qua
-                    if (existsMultiplier) continue;
-
-                    //tìm trong dictionary id tương ứng để load
-                    if (!list[i + _defaultCountInterstitial].Value.isWaiting &&
-                        list[i + _defaultCountInterstitial].Value.eCpm == -100)
-                    {
-                        MultiCall.Instance.DelayCall((i - startIndex) * 0.1f, list[i + _defaultCountInterstitial].Key,
-                            LoadInterstitialAd);
-                    }
-                }
+                //xem OnRewardedAdLoadedEvent
+                InterstitialFloors.Refill();
             }
         }
 
+        protected override bool CanLoadInterstitial(MultiCall.AdTypeMultiCall a)
+        {
+            return InterstitialFloors.CanLoad(a);
+        }
+
         #endregion
+
+        /// <summary>
+        /// Chụp hệ số gốc của từng bậc floor đúng như remote config trả về (sau các id default), để dùng
+        /// làm mức khởi đầu, mức reset sau show và mốc chặn dưới khi giảm floor.
+        /// </summary>
+        private static void CaptureConfigMultipliers(Dictionary<string, MultiCall.AdTypeMultiCall> dict,
+            int defaultCount, List<float> into)
+        {
+            var list = MultiCall.Instance.GetDictionarySortedByIndex(dict);
+            for (int i = defaultCount; i < list.Count; i++)
+            {
+                into.Add(list[i].Value.multiplier);
+            }
+        }
+
+        /// <summary>
+        /// Cứ mỗi _periodDecreaseFloor lần load fail liên tiếp thì giảm hệ số của bậc 0.1, nhưng không
+        /// thấp hơn hệ số config của bậc ngay trước nó. Bậc floor đầu tiên chặn ở 1.0 (= giá id default).
+        /// </summary>
+        private void DecreaseMultiplier(MultiCall.AdTypeMultiCall a, int countAttempt, int defaultCount,
+            List<float> configMultipliers)
+        {
+            if (configMultipliers.Count == 0 || _periodDecreaseFloor <= 0) return;
+            if (countAttempt % _periodDecreaseFloor != 0) return;
+
+            var tier = a.index - defaultCount;
+            if (tier < 0 || tier >= configMultipliers.Count) return;
+
+            var lowerBound = tier == 0 ? 1f : configMultipliers[tier - 1];
+            //đã chạm (hoặc config không tăng dần nên đang thấp hơn) mốc dưới -> giữ nguyên, không đẩy lên
+            if (a.multiplier <= lowerBound) return;
+
+            a.multiplier = Mathf.Max(a.multiplier - 0.1f, lowerBound);
+            Log($"  -> GIẢM hệ số {a.adUnitId} còn x{a.multiplier.ToString("0.##", CultureInfo.InvariantCulture)} " +
+                $"(fail {countAttempt} lần, chặn dưới x{lowerBound.ToString("0.##", CultureInfo.InvariantCulture)})");
+        }
+
+        //algo 7 tự quản thứ tự: luôn lấp bậc trống thấp nhất, kể cả khi bậc cao hơn đang có qc
+        protected override bool SkipLoadWhenHigherTierLoaded => false;
+
+        //log show: "x1.2" khi đang đúng hệ số config, "x1.2->1.1" khi đã bị giảm
+        protected override string DescribeSlotLevel(AdType type, MultiCall.AdTypeMultiCall slot)
+        {
+            if (slot.multiplier == 0) return "default";
+
+            var configs = type == AdType.Reward ? _listMultiplierRewardedDefault : _listMultiplierInterstitialDefault;
+            var defaultCount = type == AdType.Reward ? _defaultCountRewarded : _defaultCountInterstitial;
+            var tier = slot.index - defaultCount;
+            var current = slot.multiplier.ToString("0.##", CultureInfo.InvariantCulture);
+            if (tier < 0 || tier >= configs.Count) return "x" + current;
+
+            var original = configs[tier].ToString("0.##", CultureInfo.InvariantCulture);
+            return original == current ? "x" + current : "x" + original + "->" + current;
+        }
+
+        //log show: số bậc floor đang bận (đang load / chờ retry) trên số tối đa
+        protected override string DescribeFloorSlots(AdType type)
+        {
+            var queue = type == AdType.Reward ? RewardedFloors : InterstitialFloors;
+            return " slot floor=" + queue.Busy + "/" + _GROUP_COUNT;
+        }
+
+        /// <summary>
+        /// Lập lịch các bậc floor (multiplier != 0) của MỘT format:
+        ///  - nhóm mục tiêu = _GROUP_COUNT bậc TRỐNG (chưa có qc) thấp nhất; bậc đang có qc bị bỏ qua dù
+        ///    nằm dưới hay trên -> luôn ưu tiên lấp bậc trống thấp trước;
+        ///  - bậc BẬN = đang chờ callback load hoặc đang chờ retry; tối đa _GROUP_COUNT bậc bận cùng lúc;
+        ///  - bậc vừa trống (show xong) KHÔNG load ngay mà chờ có chỗ. Bậc bận bị đẩy khỏi nhóm mục tiêu
+        ///    thì chờ kết quả của nó: thành công -> giữ qc, fail -> không retry nữa; cả hai đều nhả chỗ cho
+        ///    bậc trống thấp nhất. Bậc bị đẩy ra mà đang chờ retry (tức đã fail) thì bỏ ngay.
+        /// </summary>
+        private sealed class FloorQueue
+        {
+            private readonly string _name;
+            private readonly Func<Dictionary<string, MultiCall.AdTypeMultiCall>> _dict;
+            private readonly Action<string> _load;
+            private readonly Func<MultiCall.AdTypeMultiCall, string> _describe;
+
+            //adUnitId bậc floor đang chờ retry -> mã lượt retry; lượt bị huỷ/thay thì coroutine tự bỏ qua
+            private readonly Dictionary<string, int> _retryToken = new();
+            private int _retrySeq;
+
+            //đã có id default load xong -> có valueDefault để tính floor, mới bắt đầu load bậc floor
+            public bool started;
+
+            /// <summary>Số bậc floor đang bận (đang load / chờ retry).</summary>
+            public int Busy => BusyCount(null);
+
+            public FloorQueue(string name, Func<Dictionary<string, MultiCall.AdTypeMultiCall>> dict,
+                Action<string> load, Func<MultiCall.AdTypeMultiCall, string> describe)
+            {
+                _name = name;
+                _dict = dict;
+                _load = load;
+                _describe = describe;
+            }
+
+            /// <summary>Còn chỗ thì load các bậc trống thấp nhất chưa bận.</summary>
+            public void Refill()
+            {
+                if (!started) return;
+
+                var target = TargetFloors();
+                DropRetriesOutside(target);
+
+                var free = _GROUP_COUNT - BusyCount(null);
+                Log($"REFILL {_name}: bậc trống thấp nhất=[{DescribeTargets(target)}] " +
+                    $"bận={BusyCount(null)}/{_GROUP_COUNT} -> còn {Mathf.Max(0, free)} chỗ");
+
+                foreach (var pair in target)
+                {
+                    if (IsBusy(pair)) continue;
+                    if (free <= 0)
+                    {
+                        Log($"  -> CHỜ CHỖ {_name} {_describe(pair.Value)} (đủ {_GROUP_COUNT} bậc đang bận)");
+                        continue;
+                    }
+
+                    //gọi thẳng (không DelayCall): LoadXAd bật isWaiting ngay nên lần đếm chỗ sau thấy đúng
+                    _load(pair.Key);
+                    if (pair.Value.isWaiting) free--;
+                }
+            }
+
+            /// <summary>Cổng load: id default luôn qua; bậc floor phải nằm trong nhóm mục tiêu VÀ còn chỗ.</summary>
+            public bool CanLoad(MultiCall.AdTypeMultiCall a)
+            {
+                if (a.multiplier == 0) return true;
+                if (!started) return false;
+
+                return Contains(TargetFloors(), a.adUnitId) && BusyCount(a.adUnitId) < _GROUP_COUNT;
+            }
+
+            /// <summary>
+            /// Bậc floor load fail (gọi lúc isWaiting còn true). Còn trong nhóm mục tiêu -> giữ chỗ và retry
+            /// sau <paramref name="retryDelay"/>; bị đẩy khỏi nhóm -> không retry, nhả chỗ.
+            /// </summary>
+            public void OnFloorLoadFailed(string adUnitId, float retryDelay)
+            {
+                _dict().TryGetValue(adUnitId, out var failed);
+                var name = failed != null ? _describe(failed) : adUnitId;
+
+                if (!Contains(TargetFloors(), adUnitId))
+                {
+                    Log($"  -> BỎ {_name} {name}: đã bị đẩy khỏi {_GROUP_COUNT} bậc trống thấp nhất, " +
+                        "không retry, nhả chỗ");
+                    //parent bỏ isWaiting SAU hàm này -> lấp chỗ ở frame sau mới đếm đúng
+                    MultiCall.Instance.DelayCall(0, adUnitId, _ => Refill());
+                    return;
+                }
+
+                Log($"  -> RETRY {_name} {name} sau {retryDelay}s (vẫn giữ chỗ)");
+                var token = ++_retrySeq;
+                _retryToken[adUnitId] = token;
+                MultiCall.Instance.DelayCall(retryDelay, adUnitId, id =>
+                {
+                    if (!_retryToken.TryGetValue(id, out var current) || current != token) return;
+
+                    _retryToken.Remove(id);
+                    _load(id);
+                    //bị cổng chặn (đã bị đẩy khỏi nhóm trong lúc chờ) -> chỗ này trống, lấp cho bậc khác
+                    if (_dict().TryGetValue(id, out var slot) && !slot.isWaiting)
+                    {
+                        Log($"  -> RETRY BỊ CHẶN {_name} {_describe(slot)}: không còn trong nhóm / hết chỗ");
+                        Refill();
+                    }
+                });
+            }
+
+            private List<KeyValuePair<string, MultiCall.AdTypeMultiCall>> TargetFloors()
+            {
+                var result = new List<KeyValuePair<string, MultiCall.AdTypeMultiCall>>(_GROUP_COUNT);
+                foreach (var pair in MultiCall.Instance.GetDictionarySortedByIndex(_dict()))
+                {
+                    if (result.Count >= _GROUP_COUNT) break;
+                    if (pair.Value.multiplier == 0 || pair.Value.eCpm >= 0) continue;
+                    result.Add(pair);
+                }
+
+                return result;
+            }
+
+            private bool IsBusy(KeyValuePair<string, MultiCall.AdTypeMultiCall> pair)
+                => pair.Value.isWaiting || _retryToken.ContainsKey(pair.Key);
+
+            private int BusyCount(string exclude)
+            {
+                var count = 0;
+                foreach (var pair in _dict())
+                {
+                    if (pair.Value.multiplier == 0 || pair.Key == exclude) continue;
+                    if (IsBusy(pair)) count++;
+                }
+
+                return count;
+            }
+
+            private void DropRetriesOutside(List<KeyValuePair<string, MultiCall.AdTypeMultiCall>> target)
+            {
+                List<string> drop = null;
+                foreach (var key in _retryToken.Keys)
+                {
+                    if (Contains(target, key)) continue;
+                    (drop ??= new List<string>()).Add(key);
+                }
+
+                if (drop == null) return;
+                foreach (var key in drop)
+                {
+                    _retryToken.Remove(key);
+                    var label = _dict().TryGetValue(key, out var slot) ? _describe(slot) : key;
+                    Log($"  -> BỎ RETRY {_name} {label}: bị đẩy khỏi {_GROUP_COUNT} bậc trống thấp nhất, nhả chỗ");
+                }
+            }
+
+            private string DescribeTargets(List<KeyValuePair<string, MultiCall.AdTypeMultiCall>> target)
+            {
+                var parts = new List<string>(target.Count);
+                foreach (var pair in target)
+                {
+                    var state = pair.Value.isWaiting ? "đang load"
+                        : _retryToken.ContainsKey(pair.Key) ? "chờ retry"
+                        : "rảnh";
+                    parts.Add(_describe(pair.Value) + " (" + state + ")");
+                }
+
+                return string.Join("; ", parts);
+            }
+
+            private static bool Contains(List<KeyValuePair<string, MultiCall.AdTypeMultiCall>> target, string key)
+            {
+                foreach (var pair in target)
+                {
+                    if (pair.Key == key) return true;
+                }
+
+                return false;
+            }
+        }
 
 #endif
     }

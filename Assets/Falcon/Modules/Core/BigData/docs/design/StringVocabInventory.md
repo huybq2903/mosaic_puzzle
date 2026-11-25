@@ -21,7 +21,7 @@ Chia **ba loại theo bản chất** — vì "enum-hoá toàn bộ" sẽ đụng
 | **Ad** | `adWhen`, `adWhere` | ❌ vocab per game |
 | | `adMediation` | ❌ tự do ("Max"/"IronSource"… — rất đáng đóng) |
 | | `errorCode` (`OnLoadFailed`/`OnShowFailed`) | ❌ tự do (chuỗi từ mediation) |
-| **Ui** | `uiAction` | ✅ `FUiAction` (impression/click) — nhưng chữ ký service nhận string nên vẫn gõ tay được |
+| **Ui** | ~~`uiAction`~~ | ✅ **Hết string** (09/11): mỗi hành vi là một hàm riêng (`OnImpression`/`OnClicked`/`OnDismissed`/`OnImpressionAdNotReady`) cộng một `UiTally` cố định — không còn tham số hành vi nào để gõ tay. Bề mặt dùng chung: `FUiSurface` |
 | **Label** | `labelKey` (User/Session/LevelPlayTurn/AdView/IapOfferImpression/IapPurchase/Level/IapOffer) | ⚠️ một nửa — `FUserLabelKey` (elo…), `FLevelLabelKey` (moves_limit, time_limit_sec), `FAdViewLabelKey` (load_error, show_error); key tự chế vẫn string |
 | **App/Permission** | `permissionValue` (đường `ReportPermission` string) | ✅ `FPermissionValue` + 3 wrapper kiểu hoá (Att/AdsConsent/Push) — string chỉ là cửa thoát cho quyền mới |
 | **Custom event** (`FEventLog`/`EventParam`, đường `.Send()`) | `eventName`, `eventWhere`, `eventWhen` | ❌ hoàn toàn tự do |

@@ -57,10 +57,20 @@ namespace Falcon.Modules.Core.BigData
         /// <br/>Với log impression do mediation bắn: chỉ điền khi mediation bỏ trống — giá trị
         /// mediation tự đặt luôn thắng.
         /// </summary>
+        /// <param name="adAlgorithm">
+        /// Tên thuật toán load của đợt này (yêu cầu phía đọc số 26/10) — SDK không tự biết. Khai một
+        /// lần cho mỗi đợt là mọi mốc sau tự mang theo. Multicall Max có 8 nhánh nên giá trị đề xuất
+        /// là <c>multicall_&lt;IMultiCallProvider.GetIndex()&gt;</c>; đường một-unit thì <c>single</c>.
+        /// </param>
+        /// <param name="triggerPlayTurnId">
+        /// Lượt chơi đã KÍCH HOẠT lần chiếu (hợp đồng đợt 3 B12): QC trong lượt = <c>Level.CurrentTurnId</c>, Inter sau
+        /// thắng / thua = <c>Level.LastEndedTurnId</c>, không do lượt nào thì bỏ trống. Khai cùng <paramref name="adWhen"/>.
+        /// </param>
         public void UpdateContext(
-            AdType type, string adWhere = null, string adWhen = null, string adMediation = null)
+            AdType type, string adWhere = null, string adWhen = null, string adMediation = null,
+            string adAlgorithm = null, string triggerPlayTurnId = null)
         {
-            _adRequestService.SetAdContext(type, adWhere, adWhen, adMediation);
+            _adRequestService.SetAdContext(type, adWhere, adWhen, adMediation, adAlgorithm, triggerPlayTurnId);
         }
 
         // ---- Báo khoảnh khắc ----
@@ -89,9 +99,10 @@ namespace Falcon.Modules.Core.BigData
         /// <param name="adMediation">Mediation đang dùng (Max, IronSource, AdMob...) — thuộc tính hạ tầng, biết từ lúc load nên truyền ở đây là đúng chỗ.</param>
         /// <param name="adWhen">Cùng luật với <paramref name="adWhere"/> — thường để trống ở mốc này.</param>
         /// <param name="extraMeta">Key-value tuỳ ý cho mốc này — server lưu <c>event_extra_props</c>; cột hợp đồng thắng khi trùng key.</param>
+        /// <param name="adAlgorithm">Thuật toán load của đợt — xem <see cref="UpdateContext"/>.</param>
         public void OnRequested(
             AdType type, string adWhere = null, string adMediation = null, string adWhen = null,
-            Dictionary<string, object> extraMeta = null)
+            Dictionary<string, object> extraMeta = null, string adAlgorithm = null)
         {
             _adRequestService.RequestAd(new AdViewParam
             {
@@ -99,6 +110,7 @@ namespace Falcon.Modules.Core.BigData
                 adWhere = adWhere,
                 adWhen = adWhen,
                 adMediation = adMediation,
+                adAlgorithm = adAlgorithm,
                 extraMeta = extraMeta
             });
         }
@@ -117,13 +129,14 @@ namespace Falcon.Modules.Core.BigData
         /// <inheritdoc cref="OnShown(AdShowParam)"/>
         public void OnShown(
             AdType type, string adWhere = null, string adMediation = null, string adWhen = null,
-            Dictionary<string, object> extraMeta = null)
+            Dictionary<string, object> extraMeta = null, string triggerPlayTurnId = null)
         {
             _adRequestService.ShowAd(new AdShowParam
             {
                 type = type,
                 adWhere = adWhere,
                 adWhen = adWhen,
+                triggerPlayTurnId = triggerPlayTurnId,
                 adMediation = adMediation,
                 extraMeta = extraMeta
             });
@@ -152,8 +165,7 @@ namespace Falcon.Modules.Core.BigData
         /// <c>adViewId</c> của request đang mở) — lỗi hiếm nên rẻ, còn load-THÀNH-CÔNG cố ý không
         /// có mốc (suy ra được: requests − load_error). Sau này MO cần event load-result thật thì
         /// đổi ruột, chữ ký không đổi.
-        /// <br/>⚠ Dữ liệu vào hộp cook khi loader mở mapping rule cho <c>ad_view_label</c> —
-        /// gửi trước an toàn (event id đã ký §D11), server giữ raw.
+        /// <br/>Mapping <c>ad_view_label</c> phía kho đã chạy (loader xác nhận 12/11).
         /// <br/>Chưa có request nào của format thì SDK cảnh báo và bỏ qua (lỗi không thuộc về ai).
         /// </summary>
         public void OnLoadFailed(AdType type, string errorCode)
@@ -165,10 +177,23 @@ namespace Falcon.Modules.Core.BigData
         /// Gọi hiển thị thất bại — từ <c>OnAdDisplayFailedEvent</c>. Cùng khuôn
         /// <see cref="OnLoadFailed"/>: nhãn {<see cref="FAdViewLabelKey.SHOW_ERROR"/>: code} lên
         /// view đang mở; shown-THÀNH-CÔNG không có mốc (chính là impression).
+        /// <br/>adUnitId / networkName / ecpmFloor / estimatedEcpm: ad đang định chiếu — chỉ cho
+        /// <see cref="FBigDataHooks.AdShowFailed"/> (Databuckets), KHÔNG lên BigData.
         /// </summary>
-        public void OnShowFailed(AdType type, string errorCode)
+        public void OnShowFailed(AdType type, string errorCode, string adUnitId = null, string networkName = null,
+            double? ecpmFloor = null, double? estimatedEcpm = null)
         {
+            _adRequestService.ShowFailed(type);
             _labelLogService.LabelAdView(type, FAdViewLabelKey.SHOW_ERROR, errorCode);
+            FBigDataHooks.RaiseAdShowFailed(new AdShowFailedInfo
+            {
+                type = type,
+                errorCode = errorCode,
+                adUnitId = adUnitId,
+                networkName = networkName,
+                ecpmFloor = ecpmFloor,
+                estimatedEcpm = estimatedEcpm
+            });
         }
 
         /// <summary>
@@ -214,9 +239,52 @@ namespace Falcon.Modules.Core.BigData
         /// <param name="adWhere">Chỗ định chiếu — khai cả ở ca không có ad để biết chỗ nào hay hụt.</param>
         /// <param name="adAvailable">Kho có ad sẵn lúc hỏi không (<c>IsReady</c> của mediation).</param>
         public void OnShowAttempt(
-            AdType type, string adWhere, bool adAvailable, string adWhen = null, string adMediation = null)
+            AdType type, string adWhere, bool adAvailable, string adWhen = null, string adMediation = null,
+            string triggerPlayTurnId = null)
         {
-            _adRequestService.ShowAttempt(type, adWhere, adAvailable, adWhen, adMediation);
+            _adRequestService.ShowAttempt(type, adWhere, adAvailable, adWhen, adMediation, triggerPlayTurnId);
+        }
+
+        /// <summary>
+        /// LUẬT CỦA GAME CHẶN MỘT CƠ HỘI CHIẾU AD — game gọi ĐÚNG MỘT LẦN tại điểm chiếu (hết màn, về
+        /// Home, quay lại app) khi luật của chính game bảo đừng chiếu: cooldown, user mới, vừa mua,
+        /// trần ngày/phiên, luật theo nhóm user… Bắn <c>f_sdk_ad_show_skipped</c> (ký loader 12/11).
+        /// <code>
+        /// if (secondsSinceLastInter &lt; cooldown)
+        /// {
+        ///     FalconBigDataController.Ad.OnShowSkipped(AdType.Interstitial, "level_end", AdSkipReason.Cooldown);
+        ///     return;
+        /// }
+        /// </code>
+        /// <br/>Ghép với <see cref="OnShowAttempt"/> ra số cơ hội đầy đủ:
+        /// <c>cơ hội = show_attempt + show_skipped</c> — nên gọi ở ĐÚNG điểm game sẽ gọi show, không
+        /// gọi mỗi lần kiểm tra luật.
+        /// <br/>Chỉ cho format GAME TỰ BẬT: <see cref="AdType.Interstitial"/>, <see cref="AdType.AppOpen"/>.
+        /// Format khác hoặc thiếu <paramref name="adWhere"/> ⇒ SDK cảnh báo và không gửi.
+        /// <br/>User đã có quyền No Ads: GỌI với <see cref="AdSkipReason.NoAds"/> (đứng đầu thứ tự xét) —
+        /// ai chặn thì người đó ghi: game tự kiểm No Ads trước khi gọi mediation thì game ghi; để mediation
+        /// chặn thì mediation ghi. Không bao giờ cả hai cho cùng một cơ hội.
+        /// <br/>Từ 13/11 truyền thêm "ad đang chờ" để đo một cơ hội bị chặn lẽ ra chiếu được gì:
+        /// <code>
+        /// FalconBigDataController.Ad.OnShowSkipped(AdType.Interstitial, "level_end", AdSkipReason.NoAds,
+        ///     adAvailable: MediationManager.Instance.IsInterstitialReady(),
+        ///     readyAd: MediationManager.Instance.GetReadyInterstitialInfo());
+        /// </code>
+        /// </summary>
+        /// <param name="adWhere">Điểm chiếu bị chặn — cùng bộ từ với adWhere của OnShowAttempt.</param>
+        /// <param name="skipReason">Luật ĐẦU TIÊN chặn, theo thứ tự game xét.</param>
+        /// <param name="adAvailable">
+        /// Kho mediation có ad sẵn lúc bị chặn không (<c>IsReady</c>). Bỏ trống ⇒ SDK cảnh báo, dòng vắng
+        /// field này (kho đọc là "không biết", không phải false).
+        /// </param>
+        /// <param name="readyAd">
+        /// Ad đang chờ do MEDIATION trả (network, unit, eCPM lúc load). Chỉ gửi khi
+        /// <paramref name="adAvailable"/> = true; <c>adViewId</c> SDK tự đọc.
+        /// </param>
+        public void OnShowSkipped(AdType type, string adWhere, AdSkipReason skipReason, string adWhen = null,
+            bool? adAvailable = null, AdReadyInfo readyAd = null, string triggerPlayTurnId = null)
+        {
+            _adRequestService.ShowSkipped(type, adWhere, skipReason, adWhen, adAvailable, readyAd, triggerPlayTurnId);
         }
 
         /// <summary>

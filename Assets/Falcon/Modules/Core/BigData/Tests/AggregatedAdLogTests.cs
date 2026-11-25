@@ -48,6 +48,55 @@ namespace Falcon.Modules.Core.BigData.Tests
         }
     }
 
+    /// <summary>
+    /// Khoá cụm quyết định field nào còn đúng trên dòng gộp (§4i). `adUnitId` vào khoá từ 19/10 —
+    /// trước khi mediation gửi — để không sinh ô trống im lặng lúc giá trị đó lên wire.
+    /// </summary>
+    public class BannerKeyTests
+    {
+        private static BannerKey Key(string adUnitId = null, string where = "bottom", int level = 7)
+        {
+            return new BannerKey(where, "exact", "VN", "admob", "max", level, adUnitId);
+        }
+
+        [Test]
+        public void NoAdUnitId_BehavesExactlyLikeBefore()
+        {
+            // Mediation chưa gửi mã: mọi impression vẫn gộp chung một dòng như trước 19/10
+            Assert.AreEqual(Key(), Key());
+            Assert.AreEqual(Key().GetHashCode(), Key().GetHashCode());
+        }
+
+        [Test]
+        public void DifferentAdUnit_SplitsTheCluster()
+        {
+            // Hai ad unit là hai nguồn tiền khác nhau — gộp chung là mất đúng chiều để đối chiếu
+            // với bảng kê của nhà cung cấp
+            Assert.AreNotEqual(Key("unit_a"), Key("unit_b"));
+        }
+
+        [Test]
+        public void SameAdUnit_StillClusters()
+        {
+            Assert.AreEqual(Key("unit_a"), Key("unit_a"));
+            Assert.AreEqual(Key("unit_a").GetHashCode(), Key("unit_a").GetHashCode());
+        }
+
+        [Test]
+        public void MissingAdUnit_IsNotTheSameAsHavingOne()
+        {
+            // Null = "chưa biết", không được trộn vào cụm của một unit cụ thể
+            Assert.AreNotEqual(Key(), Key("unit_a"));
+        }
+
+        [Test]
+        public void OtherDimensions_StillSplit()
+        {
+            Assert.AreNotEqual(Key("unit_a", where: "bottom"), Key("unit_a", where: "top"));
+            Assert.AreNotEqual(Key("unit_a", level: 7), Key("unit_a", level: 8));
+        }
+    }
+
     public class BannerValueTests
     {
         [Test]

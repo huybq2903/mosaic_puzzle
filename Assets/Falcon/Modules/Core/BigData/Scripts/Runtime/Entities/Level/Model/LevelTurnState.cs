@@ -23,6 +23,12 @@ namespace Falcon.Modules.Core.BigData
         public int currentLevel;
         public string currentLevelId;
         public string difficulty;
+
+        /// <summary>
+        /// Số đoạn của lượt lúc rời (hợp đồng đợt 3 B6, <c>turn_segment_no</c>): 1 = lượt mới, tăng mỗi lần chơi tiếp qua
+        /// <c>Level.OnResume</c>. Bản chụp lưu từ SDK cũ không có số (0) thì coi là đoạn 1.
+        /// </summary>
+        public int turnSegmentNo;
     }
 
     /// <summary>
@@ -70,11 +76,19 @@ namespace Falcon.Modules.Core.BigData
         private string _currentLevelId;
         private string _difficulty;
         private LevelStatus? _lastTerminalStatus;
+        private int _segmentNo;
 
         public Phase CurrentPhase { get; private set; } = Phase.None;
 
         /// <summary>Id để stamp lên log của entity KHÁC — chỉ khác null ở pha OPEN.</summary>
         public string OpenPlayTurnId => CurrentPhase == Phase.Open ? _playTurnId : null;
+
+        /// <summary>
+        /// Id của lượt KẾT THÚC gần nhất (Pass / Fail / Skip), giữ nguyên qua Start của lượt sau — để game điền
+        /// <c>triggerPlayTurnId</c> cho Inter chiếu sau thắng / thua (hợp đồng đợt 3 B12). Null nếu chưa lượt nào
+        /// kết thúc trong lần chạy này (không sống qua restart).
+        /// </summary>
+        public string LastEndedPlayTurnId { get; private set; }
 
         /// <summary>
         /// Áp một level log vào state machine: Start seed cache + mở turn; các status khác được
@@ -114,7 +128,8 @@ namespace Falcon.Modules.Core.BigData
                 playTurnId = _playTurnId,
                 currentLevel = _currentLevel,
                 currentLevelId = _currentLevelId,
-                difficulty = _difficulty
+                difficulty = _difficulty,
+                turnSegmentNo = _segmentNo
             };
         }
 
@@ -139,9 +154,10 @@ namespace Falcon.Modules.Core.BigData
         /// Game tự persist bundle trong save của họ (SDK không persist — luật A3.4 giữ nguyên).
         /// </summary>
         public Anomaly Restore(
-            string playTurnId, int currentLevel, string currentLevelId, string difficulty)
+            string playTurnId, int currentLevel, string currentLevelId, string difficulty, int segmentNo = 1)
         {
             var anomaly = CurrentPhase == Phase.Open ? Anomaly.RestoreWhileOpen : Anomaly.None;
+            _segmentNo = segmentNo;
             _playTurnId = playTurnId;
             _currentLevel = currentLevel;
             _currentLevelId = currentLevelId;
@@ -204,6 +220,7 @@ namespace Falcon.Modules.Core.BigData
         {
             CurrentPhase = Phase.Ended;
             _lastTerminalStatus = status;
+            LastEndedPlayTurnId = _playTurnId;
         }
 
         /// <summary>
@@ -218,6 +235,7 @@ namespace Falcon.Modules.Core.BigData
 
         private void SeedFrom(ALevelParamV2 param)
         {
+            _segmentNo = 1;
             if (string.IsNullOrEmpty(param.playTurnId)) param.playTurnId = Guid.NewGuid().ToString();
             _playTurnId = param.playTurnId;
             _currentLevel = param.currentLevel;

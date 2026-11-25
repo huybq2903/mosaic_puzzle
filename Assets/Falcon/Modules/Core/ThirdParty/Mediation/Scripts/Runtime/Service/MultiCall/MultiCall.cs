@@ -39,69 +39,137 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         public const string ADS_DISPLAY_FAILED = "ads_display_failed";
         public const string ADS_DISPLAYED = "ads_displayed";
         public const string KEY_SET_BID_FLOOR = "jC7Fp";
-        private List<AdBidFloor> _listAdBidFloors = new();
+        private const string _KEY_CACHE_AD_BID_FLOORS = "FALCON_LIST_AD_BID_FLOORS";
+
+        //Danh sách THÔ đúng như server gửi ở sc_ad_bid_floor. Cache cũng lưu bản thô này.
+        private List<AdBidFloor> _rawAdBidFloors;
+
+        //Kết quả lọc theo provider index, dựng LƯỜI ở lần đọc đầu tiên. null = chưa dựng.
+        private List<AdBidFloor> _listAdBidFloors;
+
+        //Index đã dùng để dựng _listAdBidFloors. int.MinValue = chưa lọc lần nào (index thật luôn >= 0).
+        private int _filteredForIndex = int.MinValue;
+
         public bool getListAdBidFloorFromServer;
         public double valueDefaultRewarded = 0;
         public double valueDefaultInterstitial = 0;
 
         public const float MULTIPLIER = 1000;
 
+        /// <summary>
+        /// Revenue/impression (USD) mà MAX trả trong <c>AdInfo.Revenue</c> -> eCPM (USD/1000 impression).
+        /// Số không dương = KHÔNG BIẾT (MAX trả âm khi không có giá) -> null, không truyền 0 (AdEcpmAndParams V1).
+        /// </summary>
+        public static double? ToEcpm(double revenue) => revenue <= 0d ? null : revenue * MULTIPLIER;
+
+        /// <summary>
+        /// Provider index của mediation đang chạy, lấy từ CMS. Bộ lọc bid floor và
+        /// <see cref="GetMultiCallProvider"/> BẮT BUỘC đọc chung một chỗ này: lọc danh sách bằng
+        /// index này rồi chạy provider của index khác thì provider thiếu đúng những id dành cho nó.
+        /// </summary>
+        internal static int ProviderIndex()
+        {
+            switch (MediationManager.Instance.CurrentMediationType())
+            {
+                case MediationType.Max:
+                    // return 3;
+                    return FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexMax;
+                case MediationType.LevelPlay:
+                    return FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexIronSource;
+                case MediationType.Admob:
+                    return FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexAdmob;
+                default:
+                    return 0;
+            }
+        }
+
+        private static List<AdBidFloor> Filter(List<AdBidFloor> source, int index)
+        {
+            var result = new List<AdBidFloor>();
+            //id AdMob (dành cho LuaDynamic) không được lọt vào MultiCall của MAX / LevelPlay: load bằng SDK đó là
+            //fail mãi và làm lệch số id default / thứ tự bậc
+            var skipAdmob = MediationManager.Instance.CurrentMediationType() != MediationType.Admob;
+            foreach (var adBidFloor in source)
+            {
+                if (skipAdmob && adBidFloor.MediationKind() == AdBidFloor.MEDIATION_ADMOB) continue;
+                if (adBidFloor.multiplier == 0 || adBidFloor.algorithmIds == null ||
+                    adBidFloor.algorithmIds.Contains(index) || (index == 3 &&
+                                                                (adBidFloor.algorithmIds.Contains(0) ||
+                                                                 adBidFloor.algorithmIds.Contains(1) ||
+                                                                 adBidFloor.algorithmIds.Contains(2))))
+                {
+                    result.Add(adBidFloor);
+                }
+            }
+
+            result.Sort((a, b) => a.multiplier.CompareTo(b.multiplier));
+            return result;
+        }
+
+        /// <summary>
+        /// Danh sách bid floor ĐÃ LỌC theo provider index đang cấu hình.
+        ///
+        /// CỐ Ý lọc ở đây - lần đọc đầu tiên, tức lúc init mediation - chứ KHÔNG lọc trong setter:
+        /// message sc_ad_bid_floor hoàn toàn có thể về TRƯỚC khi CMS settle, mà bộ lọc lại cần
+        /// moMulProviderIndex* của CMS. Lọc ngay lúc nhận là lọc bằng index mặc định 0: vừa cắt mất
+        /// id của provider thật, vừa GHI tập sai đó xuống cache nên lần mở app sau vẫn sai. Tới lúc
+        /// getter này được gọi thì hàng rào remote config đã mở, xem AdsConfigGate + StartProcess.
+        ///
+        /// Cache đời cũ là bản ĐÃ lọc (có thể lọc nhầm bằng index 0); đọc nó như bản thô thì cùng
+        /// lắm ra một tập con, và tự khỏi ngay khi server gửi list mới.
+        /// </summary>
         public List<AdBidFloor> ListAdBidFloors
         {
             get
             {
-                if (_listAdBidFloors.Count == 0)
+                _rawAdBidFloors ??= SaveLoadHandler.Load(_KEY_CACHE_AD_BID_FLOORS, new List<AdBidFloor>());
+
+                var index = ProviderIndex();
+                if (_listAdBidFloors == null || _filteredForIndex != index)
                 {
-                    _listAdBidFloors = SaveLoadHandler.Load("FALCON_LIST_AD_BID_FLOORS", new List<AdBidFloor>());
+                    _listAdBidFloors = Filter(_rawAdBidFloors, index);
+                    _filteredForIndex = index;
                 }
 
                 return _listAdBidFloors;
             }
             set
             {
-                _listAdBidFloors.Clear();
-
-                var type = MediationManager.Instance.CurrentMediationType();
-                var index = 0;
-                switch (type)
-                {
-                    case MediationType.Max:
-                        index = FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexMax;
-                        // index = 3;
-                        break;
-                    case MediationType.LevelPlay:
-                        index = FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexIronSource;
-                        break;
-                    case MediationType.Admob:
-                        index = FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexAdmob;
-                        break;
-                }
-
-                foreach (var adBidFloor in value)
-                {
-                    if (adBidFloor.multiplier == 0 || adBidFloor.algorithmIds == null ||
-                        adBidFloor.algorithmIds.Contains(index) || (index == 3 &&
-                                                                    (adBidFloor.algorithmIds.Contains(0) ||
-                                                                     adBidFloor.algorithmIds.Contains(1) ||
-                                                                     adBidFloor.algorithmIds.Contains(2))))
-                    {
-                        _listAdBidFloors.Add(adBidFloor);
-                    }
-                }
-
-                _listAdBidFloors.Sort((a, b) => a.multiplier.CompareTo(b.multiplier));
+                _rawAdBidFloors = value ?? new List<AdBidFloor>();
+                //buộc getter lọc lại theo index tại thời điểm đọc
+                _listAdBidFloors = null;
+                _filteredForIndex = int.MinValue;
                 getListAdBidFloorFromServer = true;
-                SaveLoadHandler.Save("FALCON_LIST_AD_BID_FLOORS", _listAdBidFloors);
+                SaveLoadHandler.Save(_KEY_CACHE_AD_BID_FLOORS, _rawAdBidFloors);
             }
+        }
+
+        /// <summary>
+        /// Server ĐÃ trả lời sc_ad_bid_floor nhưng không có floor nào. Mở hàng rào init để
+        /// StartProcess khỏi phải chờ hết 7s timeout, và CỐ Ý không đụng vào list/cache đang có:
+        /// payload rỗng được hiểu là "không có gì để cập nhật", không phải lệnh xoá cấu hình.
+        /// </summary>
+        /// <summary>
+        /// Danh sách THÔ đúng như server gửi ở sc_ad_bid_floor (chưa lọc theo provider index), đọc cache nếu phiên
+        /// này server chưa gửi. LuaDynamic dùng bản này: script Lua tự quyết thuật toán.
+        /// </summary>
+        public List<AdBidFloor> RawAdBidFloors =>
+            _rawAdBidFloors ??= SaveLoadHandler.Load(_KEY_CACHE_AD_BID_FLOORS, new List<AdBidFloor>());
+
+        public void MarkAdBidFloorResponded()
+        {
+            getListAdBidFloorFromServer = true;
         }
 
         public void ProcessAdUnitId(MediationType type)
         {
-            if (dictionaryRewarded.Count + dictionaryInterstitial.Count != _listAdBidFloors.Count)
+            //qua property: _listAdBidFloors dựng lười nên đọc thẳng field có thể còn null.
+            var listAdBidFloors = ListAdBidFloors;
+            if (dictionaryRewarded.Count + dictionaryInterstitial.Count != listAdBidFloors.Count)
             {
                 dictionaryRewarded.Clear();
                 dictionaryInterstitial.Clear();
-                foreach (var adBidFloor in _listAdBidFloors)
+                foreach (var adBidFloor in listAdBidFloors)
                 {
                     var timeConfig = adBidFloor.timeConfig;
                     var timeConfigs = timeConfig.Split(',');
@@ -249,21 +317,17 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             {
                 MediationManager.Instance.DebugLog("multiplier from remote config : " + MULTIPLIER);
                 var type = MediationManager.Instance.CurrentMediationType();
-                var index = 0;
+                var index = ProviderIndex();
                 var list = new List<IMultiCallProvider>();
                 switch (type)
                 {
                     case MediationType.Max:
-                        index = FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexMax;
-                        // index = 3;
                         list = _multiCallProvidersMax;
                         break;
                     case MediationType.LevelPlay:
-                        index = FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexIronSource;
                         list = _multiCallProvidersIronSource;
                         break;
                     case MediationType.Admob:
-                        index = FConfigControllerCms.Instance.Config<MultiCallConfig>().moMulProviderIndexAdmob;
                         list = _multiCallProvidersAdmob;
                         break;
                 }
@@ -347,6 +411,33 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
         }
 
+        /// <summary>
+        /// Interstitial unit KHÔNG do multicall load (workflow Floor Personalization) nhưng vẫn cần đi cùng
+        /// tham số init của MAX + disable_b2b_ad_unit_ids + disable_auto_retries. Không vào
+        /// dictionaryInterstitial nên multicall không load / không chiếu chúng.
+        /// </summary>
+        public void AddExtraInterstitialIds(IEnumerable<string> adUnitIds)
+        {
+            if (adUnitIds == null) return;
+            foreach (var id in adUnitIds)
+            {
+                if (!string.IsNullOrWhiteSpace(id)) _hashInterstitial.Add(id);
+            }
+        }
+
+        /// <summary>
+        /// Rewarded unit KHÔNG do multicall load (vd slot DFPool) nhưng vẫn cần đi cùng tham số init của MAX +
+        /// disable_b2b_ad_unit_ids + disable_auto_retries. Xem <see cref="AddExtraInterstitialIds"/>.
+        /// </summary>
+        public void AddExtraRewardedIds(IEnumerable<string> adUnitIds)
+        {
+            if (adUnitIds == null) return;
+            foreach (var id in adUnitIds)
+            {
+                if (!string.IsNullOrWhiteSpace(id)) _hashRewarded.Add(id);
+            }
+        }
+
         public void CallBeforeInit()
         {
             var result = string.Join(",", _hashInterstitial.Union(_hashRewarded));
@@ -389,6 +480,12 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             return merged.ToArray();
         }
 
+        /// <summary>Kích provider load lại các interstitial slot (sau khi personalization nhả lượt chặn).</summary>
+        public void ResumeInterstitialLoading()
+        {
+            GetMultiCallProvider()?.ResumeInterstitialLoading();
+        }
+
         public bool IsInterstitialReady()
         {
             var provider = GetMultiCallProvider();
@@ -400,17 +497,25 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             return false;
         }
 
+        public Falcon.Modules.Core.BigData.AdReadyInfo PeekInterstitial()
+            => GetMultiCallProvider()?.PeekInterstitial();
+
         public class AdTypeMultiCall
         {
             public int index;
             public string adUnitId;
             public List<int> listTimeRetry; //list time retry, split by ","
             public int countLoadAttempt; //number load ads
+            public int failCountBeforeLoad; //số lần fail liên tiếp trước lần load ra ad đang giữ (chỉ để log)
             public DateTime timeLoad; //time call request load ads
             public bool isWaiting;
             public double eCpm;
             public string networkName;
             public float multiplier; //multiplier 
+            public float requestTier; //multiplier ĐÃ DÙNG cho lần load đang bay — chụp lúc gọi LoadAd, dòng load đọc lại (thang hạ bậc sau đó không ảnh hưởng)
+            public double currentFloor; //floor
+            public string requestFloorType; //ecpmFloorType của lần load inter đang bay (vd rule_error) — chụp lúc gọi LoadAd như requestTier
+            public double loadedFloor; //floor (eCPM) của request ra ad đang giữ — chụp lúc load xong, impression đọc lại
 #if IRONSOURCE_ENABLE
             public LevelPlayInterstitialAd levelPlayInterstitialAd;
             public LevelPlayRewardedAd levelPlayRewardedAd;
@@ -443,12 +548,17 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             return false;
         }
 
-        public void ShowRewardedVideo(string placementId, Action onRewardedComplete, Action onFailed)
+        /// <summary>Giá ad MAX đắt nhất đang sẵn sàng (không tính nguồn phụ); &lt; 0 = không có.</summary>
+        public double BestMaxRevenue(AdType type) => GetMultiCallProvider()?.BestMaxRevenue(type) ?? -100d;
+
+        /// <param name="allowInterstitial">false = không cho chiếu inter thay rewarded (chỉ so giá rewarded).</param>
+        public void ShowRewardedVideo(string placementId, Action onRewardedComplete, Action onFailed,
+            bool allowInterstitial = true)
         {
             var provider = GetMultiCallProvider();
             if (provider != null)
             {
-                GetMultiCallProvider().ShowRewardedVideo(placementId, onRewardedComplete, onFailed);
+                provider.ShowRewardedVideo(placementId, onRewardedComplete, onFailed, allowInterstitial);
             }
             else
             {
@@ -457,13 +567,29 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
         }
 
+        /// <summary>
+        /// ⚠ ĐÃ NGỪNG GỬI (Request-Mediation-AdLifecycle.md, bảng "Những dòng phải XOÁ").
+        /// <br/>
+        /// <c>MAdLog</c> bắn event <c>f_sdk_mo_multiple_floor_adunit</c>, mà event đó **đã bị CHẶN
+        /// trên server** vì spam per-attempt — còn gửi chỉ tốn băng thông của người chơi.
+        /// Thay thế theo từng loại:
+        /// <list type="bullet">
+        /// <item><c>ADS_LOAD_SUCCESS</c> / <c>ADS_LOAD_FAILED</c> → <c>Ad.OnLoadResult</c>
+        /// (SDK tự gộp cụm theo unit × floor × network × kết cục, flush lúc app pause);</item>
+        /// <item><c>ADS_DISPLAY_FAILED</c> → <c>Ad.OnShowFailed</c> (đã nối ở FalconMaxService,
+        /// chạy cho CẢ hai nhánh multicall và không-multicall);</item>
+        /// <item><c>ADS_DISPLAYED</c> / <c>ADS_REVENUE_PAID</c> → bỏ hẳn, trùng 100% với
+        /// <c>Ad.OnImpression</c> (mỗi lượt xem đang đẻ 3 event).</item>
+        /// </list>
+        /// Giữ lại chữ ký rỗng thay vì xoá hàm: nhánh IronSource
+        /// (<c>MultiCallIronSourceProviderParent</c>, hiện compile-out vì không có
+        /// <c>IRONSOURCE_ENABLE</c>) vẫn còn 8 chỗ gọi. Khi nhánh đó được migrate sang
+        /// <c>FalconBigDataController.Ad</c> thì xoá luôn hàm này và cả class <c>MAdLog</c>.
+        /// </summary>
         public void LogToServer(
             string eventName, int loadTimes, AdType adType, string adWhere, string networkName,
             string mediation, double revenue, string errorMess, string adUnitId, string floor, double loadingTime)
         {
-            if (!enableLogMultiCall) return;
-            new MAdLog(eventName, loadTimes, adType, adWhere, networkName, mediation, revenue, errorMess, adUnitId,
-                floor, loadingTime).Send();
         }
 
         public void DelayCall(float time, string adUnitId, Action<string> action)

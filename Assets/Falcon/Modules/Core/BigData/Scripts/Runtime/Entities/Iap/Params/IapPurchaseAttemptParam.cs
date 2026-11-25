@@ -18,7 +18,7 @@ namespace Falcon.Modules.Core.BigData
     /// hợp đồng §D4. Dùng chung cho log mở lượt và log thất bại.
     /// </summary>
     [Serializable]
-    public class IapPurchaseAttemptParam : FParam
+    public class IapPurchaseAttemptParam : ALiveOpsParam
     {
         [NotNull] public string productId = UNKNOWN;
 
@@ -50,6 +50,7 @@ namespace Falcon.Modules.Core.BigData
 
         public override void CorrectValues()
         {
+            base.CorrectValues();
             productId = CheckNonBlank(productId, nameof(productId));
             // Kiểm ở base để cả ba mốc (mở / thất bại / mua xong) dùng chung một luật giá
             localizedPrice = CheckNumberNonNegative(localizedPrice, nameof(localizedPrice));
@@ -59,10 +60,7 @@ namespace Falcon.Modules.Core.BigData
         {
             var dictionary = base.ToDictionary();
             dictionary.Remove(nameof(extraMeta));
-            if (extraMeta == null) return dictionary;
-
-            foreach (var (key, value) in extraMeta) dictionary.PutIfAbsentAndNotNull(key, value);
-            return dictionary;
+            return dictionary.MergeExtras(extraMeta, this);
         }
     }
 

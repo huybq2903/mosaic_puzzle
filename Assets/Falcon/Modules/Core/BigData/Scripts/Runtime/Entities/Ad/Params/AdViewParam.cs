@@ -18,7 +18,7 @@ namespace Falcon.Modules.Core.BigData
     /// (xem EntityLifecycle-Design.md §4f). Cả 4 mốc mang cùng <c>adViewId</c> — id đó do SDK sinh nên nằm trên log (<see cref="AAdLog"/>), không nằm ở đây.
     /// </summary>
     [Serializable]
-    public class AdViewParam : FParam
+    public class AdViewParam : ALiveOpsParam
     {
         public AdType type;
 
@@ -34,8 +34,36 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         [FKey(RemoveIfNull = true)] [CanBeNull] public string adWhen;
 
-        /// <summary>Mediation đang dùng (Max, IronSource, AdMob...) nếu biết.</summary>
+        /// <summary>
+        /// <c>playTurnId</c> của lượt chơi đã KÍCH HOẠT lần chiếu này (hợp đồng đợt 3 B12, ký 23/11): QC trong lượt
+        /// (hồi sinh, booster) = lượt đang mở; Inter sau thắng / thua = lượt vừa kết thúc (<c>Level.LastEndedTurnId</c>).
+        /// <b>Vắng</b> khi không do lượt nào (mở app, home, shop…). Chỉ game biết — SDK không suy.
+        /// <br/>Khác <c>playTurnId</c> SDK tự đính (lượt đang mở lúc ghi dòng). Cùng luật hai chiều với
+        /// <see cref="adWhen"/>: khai ở mốc nào / qua <c>Ad.UpdateContext</c> thì các mốc sau của lần chiếu tự mang.
+        /// </summary>
+        [FKey(RemoveIfNull = true)] [CanBeNull] public string triggerPlayTurnId;
+
+        /// <summary>
+        /// Mediation đang dùng (Max, IronSource, AdMob...) nếu biết — SDK gửi NGUYÊN VĂN chuỗi
+        /// mediation truyền vào.
+        /// <br/>⚠ 1.5.5 từng thêm bước chuẩn hoá về <c>max</c>/<c>levelplay</c>/<c>admob</c> rồi
+        /// <b>RÚT LẠI</b> (owner chốt 26/10: bộ giá trị đó copy từ chỗ khác, giữ chữ cũ không có vấn
+        /// đề lớn, mà đổi giá trị một cột đang chạy thì mọi dashboard lọc theo chữ cũ phải sửa).
+        /// Nhánh nào khai sai mediation thì sửa ở nguồn — xem việc V5 của phiếu Mediation.
+        /// </summary>
         [FKey(RemoveIfNull = true)] [CanBeNull] public string adMediation;
+
+        /// <summary>
+        /// Tên THUẬT TOÁN load quảng cáo đang chạy (yêu cầu phía đọc số 26/10) — thuộc tính của cả
+        /// ĐỢT xin ad, không phải của từng unit, nên nó đi theo luật hai chiều như
+        /// <see cref="adMediation"/>: mốc nào điền thì thắng và cập nhật cache, mốc bỏ trống thì
+        /// lấy từ cache của view.
+        /// <br/>SDK KHÔNG tự biết giá trị này — tầng mediation phải khai (xem
+        /// <c>FAdApi.UpdateContext</c>). Multicall của Max có 8 nhánh
+        /// (<c>MultiCallMaxProvider0..7</c>, phân biệt bằng <c>IMultiCallProvider.GetIndex()</c>),
+        /// nên giá trị đề xuất là <c>multicall_&lt;index&gt;</c>; đường một-unit thì <c>single</c>.
+        /// </summary>
+        [FKey(RemoveIfNull = true)] [CanBeNull] public string adAlgorithm;
 
         /// <summary>
         /// Loại kết nối lúc xin ad — SDK-core tự đo. Giải thích fill-fail: không có mạng thì
@@ -55,10 +83,7 @@ namespace Falcon.Modules.Core.BigData
         {
             var dictionary = base.ToDictionary();
             dictionary.Remove(nameof(extraMeta));
-            if (extraMeta == null) return dictionary;
-
-            foreach (var (key, value) in extraMeta) dictionary.PutIfAbsentAndNotNull(key, value);
-            return dictionary;
+            return dictionary.MergeExtras(extraMeta, this);
         }
     }
 
@@ -66,6 +91,12 @@ namespace Falcon.Modules.Core.BigData
     [Serializable]
     public class AdShowParam : AdViewParam
     {
+        /// <summary>
+        /// Ad unit sắp chiếu, nếu mediation biết. Mốc này KHÔNG được SDK đoán hộ: một đợt xin ad có
+        /// nhiều unit load song song (nhiều floor), nên lấy "unit của lần load cuối" dán vào đây là
+        /// bịa. Vắng = không biết; dòng impression thì luôn có vì mediation truyền.
+        /// </summary>
+        [FKey(RemoveIfNull = true)] public string adUnitId;
     }
 
     /// <summary>Mốc ad đóng lại, người chơi quay về game (§4f).</summary>
@@ -81,5 +112,12 @@ namespace Falcon.Modules.Core.BigData
         /// Đây là <c>ad_completed</c> của hợp đồng §D2, đặt ở mốc close vì chỉ lúc đóng mới biết.
         /// </summary>
         [FKey(RemoveIfNull = true)] public bool? adCompleted;
+
+        /// <summary>
+        /// Ad unit vừa chiếu. Mediation điền thì thắng; bỏ trống thì SDK lấy unit đã ghi ở MỐC
+        /// IMPRESSION của đúng view này — đó là sự thật, không phải suy đoán (chỉ một unit được
+        /// chiếu, và nó vừa báo impression xong).
+        /// </summary>
+        [FKey(RemoveIfNull = true)] public string adUnitId;
     }
 }

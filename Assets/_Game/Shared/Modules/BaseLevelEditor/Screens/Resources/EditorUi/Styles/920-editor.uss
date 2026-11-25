@@ -1,0 +1,146 @@
+/* Khung chung của Level Editor (LevelEditorMainUI): thanh trên, vùng panel, thanh trạng thái, cửa sổ trợ giúp.
+   Nạp sau 900-kit.uss nên ghi đè được kit. Vùng giữa (.le-body) không nhận chuột: bấm xuyên xuống board. */
+
+.ed-root {
+    --le-top-h: 40px;
+    --le-status-h: 24px;
+    --le-gap: 8px;
+}
+
+.le-shell {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+}
+
+/* ---------------------------------------------------------------- menu bar (giữ dáng bản Imui cũ) */
+.le-menubar {
+    flex-shrink: 0;
+    height: var(--le-top-h);
+    padding: 0 4px;
+    align-items: center;
+    background-color: rgb(10, 14, 26);
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.le-menus { align-items: center; }
+.le-menubar .vk-btn { background-color: rgba(0, 0, 0, 0); border-width: 0; color: rgb(148, 163, 184); }
+.le-menubar .vk-btn:hover { background-color: rgb(30, 41, 59); color: rgb(248, 250, 252); }
+.le-menubar .vk-btn .vk-t-body { color: rgb(148, 163, 184); }
+.le-menubar .vk-btn:hover .vk-t-body { color: rgb(248, 250, 252); }
+.vk-btn.le-menu { flex-direction: row; align-items: center; }
+.le-menu-arrow { width: 12px; height: 12px; margin-left: 4px; flex-shrink: 0; }
+
+/* ---------------------------------------------------------------- hộp tên file + Play */
+.le-namerow {
+    flex-shrink: 0;
+    height: 30px;
+    margin-top: 6px;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+}
+
+.le-namebox {
+    width: 220px;
+    height: 26px;
+    margin-right: 12px;
+    padding: 0 8px;
+    align-items: center;
+    background-color: rgba(15, 23, 42, 0.7);
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+.le-file-name { color: rgb(255, 255, 255); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.vk-btn.le-play { width: 88px; height: 26px; }
+
+/* ---------------------------------------------------------------- giữa + thanh log */
+.le-body {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-height: 0;
+    align-items: stretch;
+}
+
+.le-logbar {
+    flex-shrink: 0;
+    height: var(--le-status-h);
+    padding: 0 8px;
+    align-items: center;
+    background-color: rgba(15, 23, 42, 0.78);
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+.le-status-text { flex-grow: 1; flex-shrink: 1; min-width: 0; color: rgb(226, 232, 240); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.le-status-slot { margin-right: 16px; }
+
+/* ---------------------------------------------------------------- trợ giúp */
+.vk-modal.le-help { height: 82%; max-height: 82%; }
+.le-help .vk-modal-body { flex-grow: 1; flex-shrink: 1; min-height: 0; padding: 0; }
+.le-help-scroll { flex-grow: 1; flex-shrink: 1; min-height: 0; }
+.le-help-scroll .unity-scroll-view__content-container { padding: 12px 16px 16px 16px; }
+.le-help-scroll .vk-card { margin-bottom: 10px; }
+.le-help-row { align-items: flex-start; padding: 3px 0; }
+.le-help-key { width: 150px; flex-shrink: 0; flex-direction: row; flex-wrap: wrap; align-items: center; }
+.le-help-key > .vk-t-faint { margin: 0 3px; }
+.le-help-desc { flex-grow: 1; flex-shrink: 1; min-width: 0; }
+
+/* phím: nền tối, viền, chữ đậm — dùng chung cho mọi màn của editor */
+.le-kbd {
+    padding: 1px 6px;
+    border-width: 1px;
+    border-bottom-width: 2px;
+    border-color: var(--line-hi);
+    border-radius: var(--r-sm);
+    background-color: var(--field);
+    color: var(--text-strong);
+    font-size: var(--fs-sm);
+    -unity-font-style: bold;
+}
+
+/* nút menu không co (chữ bị cắt "Lưu thàn…"); thiếu chỗ thì tên file ở giữa co lại */
+.le-menus { flex-shrink: 0; }
+.le-menus > .vk-btn { flex-shrink: 0; }
+/* nút menu không bao giờ cắt chữ thành "…": hụt vài pixel (đo chữ lệch ở bản build) thì chữ tràn vào phần đệm, vẫn đọc đủ */
+.le-menus > .vk-btn { text-overflow: clip; overflow: visible; }
+
+/* ---------------------------------------------------------------- Open Recent */
+.le-recent-scroll { flex-grow: 1; flex-shrink: 1; min-height: 0; }
+.le-recent-grid { flex-direction: row; flex-wrap: wrap; }
+
+.le-card {
+    width: 170px;
+    margin: 6px;
+    padding: 6px;
+    background-color: var(--card);
+    border-width: 1px;
+    border-color: var(--line);
+    border-radius: 6px;
+}
+
+.le-card:hover { background-color: var(--card-hi); }
+.le-card.le-current { border-width: 2px; border-color: rgb(17, 121, 200); }
+.le-card.le-missing { opacity: 0.6; }
+
+.le-thumb {
+    height: 94px;
+    margin-bottom: 4px;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--field);
+    border-width: 1px;
+    border-color: var(--line);
+}
+
+.le-thumb-img { flex-grow: 1; align-self: stretch; }
+
+.vk-btn.le-card-more {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+}

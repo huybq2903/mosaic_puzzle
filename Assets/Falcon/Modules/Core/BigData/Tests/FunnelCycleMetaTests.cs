@@ -27,7 +27,7 @@ namespace Falcon.Modules.Core.BigData.Tests
 
         private static FunnelLogService Service(FakeDataPool disk, FunnelRegistry registry = null)
         {
-            return new FunnelLogService(disk, new FrozenTime(), registry ?? new FunnelRegistry(), null);
+            return new FunnelLogService(disk, new FrozenTime(), registry ?? new FunnelRegistry(), null, null, null);
         }
 
         private static FunnelParam Param(string funnelName, string cycleId = null, int priority = 0)

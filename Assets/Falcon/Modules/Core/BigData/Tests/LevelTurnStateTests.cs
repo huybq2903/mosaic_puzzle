@@ -20,6 +20,35 @@ namespace Falcon.Modules.Core.BigData.Tests
         }
 
         [Test]
+        public void LastEndedTurnId_IsTheTurnThatJustEnded_AndSurvivesTheNextStart()
+        {
+            // Hợp đồng đợt 3 B12: Inter chiếu sau khi lượt kế đã mở vẫn điền được lượt kích hoạt.
+            var state = new LevelTurnState();
+            Assert.IsNull(state.LastEndedPlayTurnId, "chưa lượt nào kết thúc");
+
+            var start = StartParam();
+            state.Apply(start);
+            Assert.IsNull(state.LastEndedPlayTurnId, "lượt đang mở chưa phải lượt đã kết thúc");
+
+            state.Apply(new LevelPassParamV2());
+            Assert.AreEqual(start.playTurnId, state.LastEndedPlayTurnId);
+
+            state.Apply(StartParam(level: 6));
+            Assert.AreEqual(start.playTurnId, state.LastEndedPlayTurnId);
+            Assert.AreNotEqual(start.playTurnId, state.OpenPlayTurnId);
+        }
+
+        [Test]
+        public void LastEndedTurnId_NotSetBySuspendOrHeartbeat()
+        {
+            var state = new LevelTurnState();
+            state.Apply(StartParam());
+            state.Apply(new LevelHeartBeatParamV2());
+            state.Suspend();
+            Assert.IsNull(state.LastEndedPlayTurnId);
+        }
+
+        [Test]
         public void Start_GeneratesId_AndWritesBackToParam()
         {
             var state = new LevelTurnState();

@@ -171,34 +171,32 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         private void OnImpressionDataReadyEvent(LevelPlayImpressionData adInfo)
         {
             if (adInfo?.Revenue == null) return;
-            AdType type;
-            switch (adInfo.AdFormat.ToLower())
+            AdType? knownType = adInfo.AdFormat?.ToLower() switch
             {
-                case _INTERSTITIAL_IRS:
-                    type = AdType.Interstitial;
-                    break;
-                case _BANNER_IRS:
-                    type = AdType.Banner;
-                    break;
-                case _REWARDED_IRS:
-                    type = AdType.Reward;
-                    break;
-                default:
-                    type = AdType.AppOpen;
-                    break;
-            }
+                _INTERSTITIAL_IRS => AdType.Interstitial,
+                _BANNER_IRS => AdType.Banner,
+                _REWARDED_IRS => AdType.Reward,
+                _ => null
+            };
 
-            //log to client data
-            AdLogClient(adInfo, type);
-            //log bigdata
-            AdLog(adInfo, type);
-            if (!_useMultiCall)
+            if (knownType is { } type)
             {
-                //log to adInfo
-                AdLogInfo(adInfo, type);
-            }
+                //log to client data
+                AdLogClient(adInfo, type);
+                //log bigdata
+                AdLog(adInfo, type);
+                if (!_useMultiCall)
+                {
+                    //log to adInfo
+                    AdLogInfo(adInfo, type);
+                }
 
-            LogBambooTaichi.Instance.Log(adInfo.Revenue.Value, type);
+                LogBambooTaichi.Instance.Log(adInfo.Revenue.Value, type);
+            }
+            else
+            {
+                Debug.LogError($"FalconIronSourceService > ad format lạ '{adInfo.AdFormat}': bỏ log client/BigData/server, chỉ gửi Firebase + MMP");
+            }
 
             //log firebase
             FalconFirebaseLog.LogImpression(_IRON_SOURCE, adInfo.AdNetwork, adInfo.InstanceName, adInfo.AdFormat,
@@ -551,7 +549,15 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             string where, Action onInterstitialClosed = null, Action onFail = null,
             bool needAdBreak = false, bool showForRewarded = false)
         {
-            if (_settings == null) return;
+            if (_settings == null)
+            {
+                onFail?.Invoke();
+                return;
+            }
+
+            //inter chiếu thay rewarded: mang adWhen / triggerPlayTurnId của lượt rewarded sang
+            if (showForRewarded) MediationManager.ApplyRewardedContextToInterstitial();
+
             if (IsRemoveAds() && !showForRewarded)
             {
                 onInterstitialClosed?.Invoke();
@@ -817,7 +823,7 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             _dateTimeTimeShow = DateTime.Now;
 #if IRONSOURCE_ENABLE
             if (_useMultiCall)
-                MultiCall.Instance.ShowRewardedVideo(_placementId, onRewardedComplete, onFail);
+                MultiCall.Instance.ShowRewardedVideo(_placementId, onRewardedComplete, onFail, showInterstitialInstead);
             else
             {
                 _idAd = Guid.NewGuid().ToString();

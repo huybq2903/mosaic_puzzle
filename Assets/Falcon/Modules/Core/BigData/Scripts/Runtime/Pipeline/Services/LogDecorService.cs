@@ -44,6 +44,18 @@ namespace Falcon.Modules.Core.BigData
                 decorator.Decor(log);
         }
 
+        /// <summary>
+        /// Trang trí một log CHỈ để xem trước (bản chụp khẩn S2) — log không bao giờ vào hàng đợi. Decorator đọc cờ
+        /// <see cref="PlainLog.preview"/> và bỏ mọi side effect. Decorator mới áp lên log bản chụp
+        /// (<c>AFalconLog</c>, <c>FLevelLog</c>, <c>FAppIssueLog</c>) phải tôn trọng cờ này.
+        /// </summary>
+        public void DecorPreview(PlainLog log)
+        {
+            log.preview = true;
+            foreach (var decorator in _byType.GetOrAdd(log.GetType(), BuildFor))
+                decorator.Decor(log);
+        }
+
         private ILogDecorator[] BuildFor(Type logType)
         {
             return _decorators.Where(decorator => decorator.DecorLogType.IsAssignableFrom(logType)).ToArray();

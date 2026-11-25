@@ -36,6 +36,15 @@ namespace Falcon.Modules.Core.BigData
             }
         }
 
+        /// <summary>Id của lượt kết thúc gần nhất — xem LevelTurnState.LastEndedPlayTurnId.</summary>
+        public string LastEndedPlayTurnId
+        {
+            get
+            {
+                lock (_lock) return _turnState.LastEndedPlayTurnId;
+            }
+        }
+
         /// <summary>
         /// Đưa param của một level log qua state machine: Start mở turn + seed cache,
         /// các status khác được điền tham số còn trống từ cache (giá trị đã nhập luôn thắng).
@@ -129,7 +138,7 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public void RestoreTurn(
             string playTurnId, int currentLevel, string currentLevelId = null, string difficulty = null,
-            int? movesLimit = null, int? timeLimitSec = null)
+            int? movesLimit = null, int? timeLimitSec = null, int segmentNo = 1)
         {
             if (string.IsNullOrEmpty(playTurnId))
             {
@@ -140,7 +149,7 @@ namespace Falcon.Modules.Core.BigData
             LevelTurnState.Anomaly anomaly;
             lock (_lock)
             {
-                anomaly = _turnState.Restore(playTurnId, currentLevel, currentLevelId, difficulty);
+                anomaly = _turnState.Restore(playTurnId, currentLevel, currentLevelId, difficulty, segmentNo);
             }
 
             SetLevelConfig(currentLevel, movesLimit, timeLimitSec);

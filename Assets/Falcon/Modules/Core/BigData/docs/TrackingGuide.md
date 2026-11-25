@@ -9,13 +9,13 @@ Dành cho dev game tích hợp SDK. Đọc 5 phút là log đúng; phần "vì s
    bản tin, điền id lượt chơi, cache tham số, tính counter. Đừng tự new log rồi tự điền những thứ
    SDK điền được.
 2. **Param = cái GAME khai, phần còn lại SDK thêm.** Field nào bạn không thấy trên API nghĩa là
-   SDK tự lo (`playTurnId`, `adViewId`, `winStreak`, `fillLatencyMs`…) — không có cách set tay,
+   SDK tự lo (`playTurnId`, `adViewId`, `playSecSinceEnter`, `fillLatencyMs`…) — không có cách set tay,
    và đó là có chủ ý.
 3. **Một cửa duy nhất:** `FalconBigDataController.<Nhóm>.<Hàm>`. Không cần giữ reference.
 4. **Vocab có hằng số thì CẤM gõ string tay** (luật hợp đồng §H2) — mỗi game một kiểu chữ là
    dữ liệu chéo game mù. Thêm giá trị mới = sửa hợp đồng với đội data, không tự chế.
 
-## Bản đồ 10 nhóm API
+## Bản đồ 13 nhóm API
 
 | Nhóm | Dành cho | Hàm chính |
 |---|---|---|
@@ -25,10 +25,18 @@ Dành cho dev game tích hợp SDK. Đọc 5 phút là log đúng; phần "vì s
 | `Iap` | phễu checkout | `OnStarted` `OnPurchased` `OnFailed` — thường **module IAP gọi hộ** |
 | `Resource` | dòng tài nguyên | `OnEarned` `OnSpent` `OnExchange` |
 | `Funnel` | phễu FTUE / feature | `Register` `OnStep` `CurrentPriority` `HasPassed` `LastJoinDay` |
+| `LiveOps` | event live-op (đợt, mốc) | `DeclareCycle` `OnStep` `Stamp` — hợp đồng đầy đủ: `design/LiveOpsEventContract.md` |
+| `Feature` | tính năng luôn bật (bang hội, quà ngày, nâng cấp) | `State` `Step` `Stamp` — hợp đồng đầy đủ: `design/FeatureContract.md`; ví dụ cầm tay: `games/Request-Game-Team.md` |
+| `Ui` | exposure UI (đếm gộp cụm) | `OnImpression` `OnClicked` |
 | `Label` | gán nhãn / tham số động | trục LẦN: `User` `Session` `LevelPlayTurn` `AdView` `IapOfferImpression` `IapPurchase` · trục VẬT: `Level` `IapOffer` |
 | `Common` | tham số đi theo MỌI log | `Set` `Remove` |
 | `App` | mốc mở app, permission | `ReportOpenSource` `ReportAttStatus`… — thường **module khác gọi hộ** |
 | `Player` | đọc chỉ số người chơi | (read-only) |
+
+⚠ Ba nhóm `LiveOps` / `Feature` / `Ui` thêm sau bản 1.3.0 của tài liệu này, nên **phần "cầm tay"
+bên dưới chưa có mục cho chúng** — đọc hợp đồng riêng ở cột cuối. Hai nhóm đầu là **hai trục trực
+giao**: event live-op loại trừ nhau (một dòng thuộc một event), tính năng thì chạy **song song**
+(xin thẻ trong bang hội giữa mùa card collection ⇒ một dòng mang cả hai).
 
 **Convention chữ ký**: mốc nào cũng nhận **param object** (cửa chuẩn — payload phình thêm field
 thì chữ ký không đổi); các bản knob phẳng (`OnRequested(type, adWhere: ...)`) chỉ là shorthand
@@ -62,8 +70,9 @@ BD.OnFail(failReason: LevelFailReason.OutOfMoves, levelProgress: 85);
   `BD.OnResume(snap);` khi mở lại. Một ván = một `playTurnId` dù qua restart.
 - **Elo người chơi**: `BD.SetUserElo(1350);` mỗi khi nó đổi (gọi lại cùng giá trị SDK tự bỏ qua).
   **ĐỪNG** gửi độ khó của màn — server tự giải từ tỉ lệ pass của cả fleet.
-- **`winStreak`/`loseStreak` trên log là chuỗi THỐNG KÊ chuẩn fleet** — SDK tính, không set được.
-  Feature streak riêng của game (first-attempt-only, milestone…) → `Label.User("streak_status", n)`.
+- **Chuỗi thắng/thua: SDK KHÔNG còn đếm hộ** (bỏ 14/10). Chuỗi của game — dù định nghĩa kiểu nào —
+  game tự giữ rồi gửi qua `Label.User("streak_status", n)` hoặc key riêng có tiền tố trên log level.
+  Phía kho muốn chuỗi Pass/Fail thuần thì suy từ stream level, không cần client gửi.
 
 ## IapOffer — một lần hiển thị offer
 
@@ -149,6 +158,10 @@ một hình dạng nên dashboard funnel phía server generic được, không c
 Log lại thứ đã có event chủ thể qua Funnel là double coverage — hai nguồn cho một sự thật, sớm
 muộn lệch nhau.
 
+> ⚠ **FTUE không đi qua Funnel nữa** (ký 10/11): dùng `FalconBigDataController.Ftue` — `OnFirstScreen()` ·
+> `OnTutorialStart("tut_v3")` · `OnTutorialStep(3, "first_match")` · `OnTutorialComplete()` · `OnTutorialSkip()`. Mỗi mốc một lần
+> cho mỗi lần cài, không số thứ tự, không ép thứ tự. `FFunnelName.Ftue` đã lỗi thời (funnel cũ vẫn chạy cho game đang dùng).
+
 ```csharp
 var F = FalconBigDataController.Funnel;
 F.Register(FFunnelName.BattlePass, FunnelShape.Repeatable);   // 1 lần lúc khởi động
@@ -156,8 +169,8 @@ F.OnStep(FFunnelName.BattlePass, FFunnelAction.Join,      priority: 1);
 F.OnStep(FFunnelName.BattlePass, FFunnelAction.Milestone, priority: 2);
 
 // Đọc tiến độ — cùng sổ mà van lọc trùng dùng (sổ LOCAL đời máy, không phải chân lý cross-device)
-int? step = F.CurrentPriority(FFunnelName.Ftue);            // mốc cao nhất đã đi (chỉ OnceOrdered)
-bool done = F.HasPassed(FFunnelName.Ftue, 3);               // OnceOrdered đã qua mốc 3?
+int? step = F.CurrentPriority("my_onboarding");            // mốc cao nhất đã đi (chỉ OnceOrdered)
+bool done = F.HasPassed("my_onboarding", 3);                 // OnceOrdered đã qua mốc 3?
 bool claimed = F.HasPassed("battle_pass", "season_5", FFunnelAction.Claim, 3); // OncePerCycle
 DateTime? joined = F.LastJoinDay("battle_pass");            // lần Join gần nhất (mốc của funnelDay)
 ```
@@ -251,8 +264,8 @@ mãi), lần tả một lượt (đúng một lần). Đánh lại màn 20 lần
 - Nhãn VẬT không bắn bản tin nào — đi ké mọi event của vật đó, gọi bao nhiêu lần cũng
   không tốn; trần 256 B/bundle. Nhãn user: trần 20 key, value chữ ≤ 64 ký tự — server DROP nếu vượt,
   SDK chặn sớm kèm cảnh báo.
-- ⚠ **Key trùng tên cột hợp đồng bị từ chối** (vd `win_streak`) — đặt tên theo nghĩa của game:
-  `streak_status`, không phải `win_streak`.
+- ⚠ **Key trùng tên cột hợp đồng bị từ chối** (vd `fail_count`, `play_turn_id`) — đặt tên theo
+  nghĩa của game: `retry_count`, không phải `fail_count`.
 
 ## Common — tham số đi theo MỌI log
 
@@ -288,7 +301,7 @@ load→show→close; `Iap.OnStarted` lúc mở billing + `OnFailed(reason)` lúc
 | Đừng | Mà hãy |
 |---|---|
 | Gọi lại `Level.OnStart` khi mua thêm lượt đi giữa ván | `Level.UpdateTurn(...)` — Start mới là ĐÈ lượt |
-| Tự đếm winStreak rồi gửi qua label `win_streak` | đọc `Level.WinStreak`; feature streak → `streak_status` |
+| Gửi chuỗi thắng của game qua key chung chung như `streak` | key riêng có tiền tố (`<event>_winstreak`) hoặc `Label.User("streak_status", n)` |
 | Gửi độ khó màn tự tính lên server | không gửi — server giải từ tỉ lệ pass cả fleet |
 | Log mỗi offer trên kệ shop một event | MỘT `Offer.OnShown` mang mảng productId |
 | Quy đổi giá về USD ở client | gửi giá local + mã ISO |

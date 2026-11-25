@@ -40,14 +40,11 @@ namespace Falcon.Modules.Core.BigData
             _logScheduleService.Enqueue(new FLevelLog(param));
         }
 
-        /// <summary>
-        /// Nhịp giữa ván (heartbeat) — bản tin bảo hiểm kill-cứng của lượt chơi. Định danh lượt
-        /// param không khai thì decor tự điền từ cache.
-        /// </summary>
-        public void LogLevelHeartbeat(LevelHeartBeatParamV2 param)
+        /// <summary>Gửi <c>f_sdk_speed_action</c> (B7). Luật tham số nằm ở <see cref="FLevelApi.OnSpeedAction"/>.</summary>
+        public void LogSpeedAction(FSpeedActionLog log)
         {
-            if (param == null) return;
-            _logScheduleService.Enqueue(new FLevelLog(param));
+            if (log == null) return;
+            _logScheduleService.Enqueue(log);
         }
 
         /// <summary>Gửi log Pass — định danh lượt tự điền từ cache.</summary>

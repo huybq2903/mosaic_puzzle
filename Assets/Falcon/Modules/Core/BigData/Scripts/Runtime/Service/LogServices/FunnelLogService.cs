@@ -16,19 +16,39 @@ namespace Falcon.Modules.Core.BigData
     {
         private const string JOIN_DAY_SUFFIX = "_joinDay";
 
+        /// <summary>Chu kỳ mà hai mốc giờ-chơi dưới đây đang thuộc về — đổi chu kỳ là reset mốc.</summary>
+        private const string PLAY_MARK_CYCLE_SUFFIX = "_playMarkCycle";
+
+        /// <summary>Mốc giờ-chơi lúc VÀO PHỄU của chu kỳ hiện tại (giây, <c>TotalPlayTime</c>).</summary>
+        private const string PLAY_MARK_ENTER_SUFFIX = "_playMarkEnter";
+
+        /// <summary>Mốc giờ-chơi của bước HỢP LỆ gần nhất trong chu kỳ hiện tại (giây).</summary>
+        private const string PLAY_MARK_STEP_SUFFIX = "_playMarkStep";
+
+        /// <summary>Mốc <c>MaxPassedLevel</c> lúc VÀO PHỄU của chu kỳ hiện tại.</summary>
+        private const string LEVEL_MARK_ENTER_SUFFIX = "_levelMarkEnter";
+
+        /// <summary>Mốc <c>MaxPassedLevel</c> của bước HỢP LỆ gần nhất trong chu kỳ hiện tại.</summary>
+        private const string LEVEL_MARK_STEP_SUFFIX = "_levelMarkStep";
+
         private readonly IDataPool _dataPool;
         private readonly ITimeRepository _timeRepository;
         private readonly FunnelRegistry _funnelRegistry;
         private readonly LogScheduleService _logScheduleService;
+        private readonly IFPlayerSessionService _sessionService;
+        private readonly IFPlayerGeneralRepository _generalRepository;
 
         public FunnelLogService(
             IDataPool dataPool, ITimeRepository timeRepository,
-            FunnelRegistry funnelRegistry, LogScheduleService logScheduleService)
+            FunnelRegistry funnelRegistry, LogScheduleService logScheduleService,
+            IFPlayerSessionService sessionService, IFPlayerGeneralRepository generalRepository)
         {
             _dataPool = dataPool;
             _timeRepository = timeRepository;
             _funnelRegistry = funnelRegistry;
             _logScheduleService = logScheduleService;
+            _sessionService = sessionService;
+            _generalRepository = generalRepository;
         }
 
         /// <summary>
@@ -101,6 +121,18 @@ namespace Falcon.Modules.Core.BigData
         /// <param name="funnelLog"></param>
         /// <returns></returns>
         public DecorInfo Check(AFunnelLog funnelLog)
+        {
+            var info = CheckShapeRules(funnelLog);
+
+            // Bước bị van đánh trượt KHÔNG dịch mốc giờ-chơi: nó không lên wire, dịch mốc là bước
+            // sau đo từ một bước chưa từng tồn tại. Đặt ở đây (sau khi biết phán quyết) thay vì
+            // trong từng nhánh shape — ba nhánh thì sớm muộn có nhánh quên.
+            if (info.valid) StampDistanceMarks(funnelLog);
+            return info;
+        }
+
+        /// <inheritdoc cref="Check"/>
+        private DecorInfo CheckShapeRules(AFunnelLog funnelLog)
         {
             var logParams = funnelLog.param;
 
@@ -221,6 +253,105 @@ namespace Falcon.Modules.Core.BigData
         public static string CycleStepKey(string funnelName, string cycleId, string action, int priority)
         {
             return funnelName + "_" + cycleId + "_" + action + "_" + priority;
+        }
+
+        /// <summary>
+        /// Đóng bốn mốc KHOẢNG CÁCH của bước funnel: hai mốc giờ chơi
+        /// (<see cref="AFunnelLog.playSecSinceEnter"/> / <see cref="AFunnelLog.playSecSincePrevStep"/>)
+        /// và hai mốc level (<see cref="AFunnelLog.levelsSinceEnter"/> /
+        /// <see cref="AFunnelLog.levelsSincePrevStep"/>) — xem doc bốn field đó về lý do chọn đồng
+        /// hồ <c>TotalPlayTime</c>, chọn <c>MaxPassedLevel</c>, chọn mốc vào-phễu thay vì bước
+        /// <c>join</c>, và luật vắng-mặt-chứ-không-gửi-0.
+        /// <br/>Hai thước đo đi cặp vì chúng bù lỗ cho nhau: giờ chơi đếm cả lúc app mở mà không
+        /// chơi, level thì không; đổi lại level đứng yên khi user cày lại một màn, giờ chơi thì
+        /// không.
+        /// <br/>Sổ mốc là 5 key MỘT BẢN GHI mỗi funnel (chu kỳ + 2 mốc giờ + 2 mốc level), không
+        /// sinh key mới mỗi chu kỳ: funnel mùa chạy vài năm thì pool phình vô hạn.
+        /// </summary>
+        private void StampDistanceMarks(AFunnelLog funnelLog)
+        {
+            // Đường dựng service thiếu dep (test tầng đọc truyền null): không có đồng hồ thì
+            // không có số — vắng mặt, chứ không gửi 0.
+            if (_sessionService == null) return;
+
+            var funnelName = funnelLog.param.funnelName;
+            var cycleId = funnelLog.param.cycleId ?? string.Empty;
+            var nowSec = _sessionService.TotalPlayTime.TotalSeconds;
+            var nowLevel = _generalRepository?.MaxPassedLevel;
+
+            var cycleKey = funnelName + PLAY_MARK_CYCLE_SUFFIX;
+            var enterKey = funnelName + PLAY_MARK_ENTER_SUFFIX;
+            var stepKey = funnelName + PLAY_MARK_STEP_SUFFIX;
+            var levelEnterKey = funnelName + LEVEL_MARK_ENTER_SUFFIX;
+            var levelStepKey = funnelName + LEVEL_MARK_STEP_SUFFIX;
+
+            var sameCycle = _dataPool.HasKey(enterKey) &&
+                            _dataPool.GetOrDefault(cycleKey, string.Empty) == cycleId;
+
+            if (sameCycle)
+            {
+                funnelLog.playSecSinceEnter =
+                    Delta(nowSec, _dataPool.GetOrDefault(enterKey, nowSec), funnelName, "giờ chơi", "mốc vào phễu");
+                funnelLog.playSecSincePrevStep = _dataPool.HasKey(stepKey)
+                    ? Delta(nowSec, _dataPool.GetOrDefault(stepKey, nowSec), funnelName, "giờ chơi", "bước trước")
+                    : null;
+
+                if (nowLevel.HasValue)
+                {
+                    funnelLog.levelsSinceEnter = _dataPool.HasKey(levelEnterKey)
+                        ? Delta(nowLevel.Value, _dataPool.GetOrDefault(levelEnterKey, nowLevel.Value),
+                            funnelName, "số level", "mốc vào phễu")
+                        : null;
+                    funnelLog.levelsSincePrevStep = _dataPool.HasKey(levelStepKey)
+                        ? Delta(nowLevel.Value, _dataPool.GetOrDefault(levelStepKey, nowLevel.Value),
+                            funnelName, "số level", "bước trước")
+                        : null;
+                }
+            }
+            else
+            {
+                // Bước ĐẦU của chu kỳ: chính nó là mốc vào phễu, và chưa có bước trước
+                _dataPool.Save(cycleKey, cycleId);
+                _dataPool.Save(enterKey, nowSec);
+                _dataPool.Delete(stepKey);
+                _dataPool.Delete(levelStepKey);
+                funnelLog.playSecSinceEnter = 0;
+                funnelLog.playSecSincePrevStep = null;
+
+                if (nowLevel.HasValue)
+                {
+                    _dataPool.Save(levelEnterKey, nowLevel.Value);
+                    funnelLog.levelsSinceEnter = 0;
+                }
+                else
+                {
+                    // Không đọc được tiến độ level thì KHÔNG đóng mốc rỗng: mốc sai còn tệ hơn
+                    // không có mốc, vì bước sau sẽ đo từ nó.
+                    _dataPool.Delete(levelEnterKey);
+                }
+
+                funnelLog.levelsSincePrevStep = null;
+            }
+
+            _dataPool.Save(stepKey, nowSec);
+            if (nowLevel.HasValue) _dataPool.Save(levelStepKey, nowLevel.Value);
+        }
+
+        /// <summary>
+        /// Khoảng cách giữa hai mốc, làm tròn về số nguyên. Số ÂM = sổ mốc (pool) lệch sổ nguồn
+        /// (<c>TotalPlayTime</c> / <c>MaxPassedLevel</c>) — hai sổ khác vòng đời nên có ca lệch
+        /// (bài học SessionUid vs SessionId; hoặc user xoá data): trả VẮNG MẶT + cảnh báo, không
+        /// trả 0. Gửi 0 là bịa "hai bước sát nhau", mà đó lại là con số người đọc tin nhất.
+        /// </summary>
+        private static long? Delta(double now, double mark, string funnelName, string measure, string what)
+        {
+            var delta = now - mark;
+            if (delta >= 0) return (long)Math.Round(delta);
+
+            AnalyticLogger.Instance.Warning(
+                $"Funnel '{funnelName}': {measure} tới {what} ra số âm ({delta:F1}) — sổ mốc lệch " +
+                "sổ nguồn, bỏ trường thay vì gửi 0.");
+            return null;
         }
 
         /// <summary>

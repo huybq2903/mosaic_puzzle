@@ -82,10 +82,7 @@ namespace Falcon.Modules.Core.BigData
         {
             var dictionary = base.ToDictionary();
             dictionary.Remove(nameof(extraMeta));
-            if (extraMeta == null) return dictionary;
-
-            foreach (var (key, value) in extraMeta) dictionary.PutIfAbsentAndNotNull(key, value);
-            return dictionary;
+            return dictionary.MergeExtras(extraMeta, this);
         }
     }
 

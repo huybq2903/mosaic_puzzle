@@ -5,6 +5,8 @@
  * Date: 2026-08-05
  */
 
+using System;
+
 // ReSharper disable once CheckNamespace
 namespace Falcon.Modules.Core.BigData
 {
@@ -16,7 +18,13 @@ namespace Falcon.Modules.Core.BigData
     /// </summary>
     public static class FFunnelName
     {
-        /// <summary>First-time user experience (§D6) — funnel MỘT LẦN, các bước đi đúng thứ tự.</summary>
+        /// <summary>
+        /// First-time user experience (§D6) — funnel MỘT LẦN, các bước đi đúng thứ tự.
+        /// <br/>⚠ LỖI THỜI từ 10/11: dùng <see cref="FFtueApi"/>. Funnel <c>OnceOrdered</c> khoá sổ theo
+        /// <c>priority</c> do game tự đánh, nên chèn/bỏ bước là chặn trắng và không có chỗ cho "bỏ qua".
+        /// Hành vi của funnel này KHÔNG đổi — game đang gửi cứ chạy như cũ.
+        /// </summary>
+        [Obsolete("FTUE mới: FalconBigDataController.Ftue.* (họ f_sdk_ftue_*, ký 10/11). Funnel ftue cũ vẫn chạy y như trước cho game đang dùng.")]
         public const string Ftue = "ftue";
 
         public const string BattlePass = "battle_pass";

@@ -27,11 +27,31 @@ namespace Falcon.Modules.InAppLog.Bigdata.Runtime
 
         private static InAppParam _param;
 
+        private static LiveOpsRef _liveOps;
+
+        public static void CustomLiveOps(LiveOpsRef liveOps)
+        {
+            _liveOps = liveOps;
+        }
+
         public void OnPurchaseStarted(Product product, string where, string why)
         {
-            FalconBigDataController.Iap.OnStarted(
-                BuildProductId(product.definition.id, why), where,
-                product.metadata.localizedPrice, product.metadata.isoCurrencyCode);
+            FalconBigDataController.Iap.OnStarted(ApplyLiveOps(new IapPurchaseAttemptParam
+            {
+                productId = BuildProductId(product.definition.id, why),
+                where = where,
+                localizedPrice = product.metadata.localizedPrice,
+                isoCurrencyCode = product.metadata.isoCurrencyCode
+            }));
+        }
+
+        private static T ApplyLiveOps<T>(T param) where T : ALiveOpsParam
+        {
+            // Chép cả bảy field ngữ cảnh (4 live-op + 3 tính năng) qua hàm của lớp nền: null-safe,
+            // khuôn ??= nên giá trị đã đặt tay vẫn thắng. Lớp nền mọc field mới thì file này không
+            // phải sửa — trước đây liệt kê tay 4 field nên dòng started/failed rơi trục tính năng.
+            param.CopyContextFrom(_liveOps);
+            return param;
         }
 
         public void OnPurchaseFailed(Product product, PurchaseFailureReason reason)
@@ -90,14 +110,19 @@ namespace Falcon.Modules.InAppLog.Bigdata.Runtime
             inappParam.transactionId = transactionId;
             inappParam.purchaseToken = purchaseToken;
             inappParam.currentLevel = currentLevel;
-            FalconBigDataController.Iap.OnPurchased(inappParam);
+            FalconBigDataController.Iap.OnPurchased(ApplyLiveOps(inappParam));
             _param = null;
+            _liveOps = null;
         }
 
         [RuntimeInitializeOnLoadMethod]
         private static void Initialize()
         {
-            IAPManager.onPurchaseFailed += _ => _param = null;
+            IAPManager.onPurchaseFailed += _ =>
+            {
+                _param = null;
+                _liveOps = null;
+            };
         }
     }
 

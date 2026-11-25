@@ -52,6 +52,9 @@ typedef NS_ENUM(NSInteger, FsnLayoutType) {
 @property (nonatomic, strong) GADAdLoader *adLoader;
 
 @property (nonatomic, assign) BOOL isLoading;
+
+// Giá sàn eCPM tính bằng CENT gửi qua extras "rusd" cho lượt load kế tiếp. nil/rỗng = không set sàn.
+@property (nonatomic, strong) NSString *bidFloorCents;
 @property (nonatomic, assign) NSTimeInterval lastLoadTime;
 @property (nonatomic, strong) UIView *adContainerView;
 @property (nonatomic, strong) NSTimer *countDownTimer;
@@ -74,6 +77,12 @@ typedef NS_ENUM(NSInteger, FsnLayoutType) {
 - (void)loadNativeAdWithRequestId:(int)requestId
                        mediaRatio:(int)ratio;
 
+- (void)loadNativeAdWithRequestId:(int)requestId
+                       mediaRatio:(int)ratio
+                    bidFloorCents:(NSString *)bidFloorCents;
+
+- (double)loadedRevenueWithRequestId:(int)requestId;
+
 - (BOOL)isNativeAdReadyWithRequestId:(int)requestId;
 
 - (void)showNativeAdWithRequestId:(int)requestId
@@ -82,5 +91,9 @@ typedef NS_ENUM(NSInteger, FsnLayoutType) {
                   overlayClosePos:(int)closePos;
 
 - (void)hideNativeAdWithRequestId:(int)requestId;
+
+// Giải phóng ad + state của một request mà Unity đã bỏ (chưa show / load lỗi / bị thay).
+// Request đang hiển thị thì bỏ qua: luồng đóng tự dọn.
+- (void)destroyNativeWithRequestId:(int)requestId;
 
 @end

@@ -1,3 +1,36 @@
+## 1.2.12
+Vòng đời UIPopup (UICore)
+
+Mở lần đầu tiên
+
+OnUIPopupAwake ✅
+OnUIPopupEnable ✅
+OnUIPopupStart ✅
+Đóng rồi mở lại (lần 2, 3...)
+
+OnUIPopupAwake ❌
+OnUIPopupEnable ✅
+OnUIPopupStart ❌
+Vừa bấm X (đang chạy animation đóng) thì mở lại
+
+OnUIPopupAwake ❌
+OnUIPopupEnable ✅
+OnUIPopupStart ❌
+Popup đang hiện mà bị gọi OpenPopup thêm lần nữa
+
+OnUIPopupAwake ❌
+OnUIPopupEnable ❌ (trước đây ✅)
+OnUIPopupStart ❌
+Không chạy lại animation mở, không gọi onShow, không gọi onUIPopupBeforeOpen
+Chỉ đưa popup lên trên cùng, gọi callback và onUIPopupChanged
+Ghi chú
+
+OnUIPopupAwake và OnUIPopupStart chỉ chạy một lần trong đời popup, nhờ cờ HasStarted.
+Popup được coi là đang hiện hay đã đóng dựa vào cờ popup.visible. ClosePopup đặt cờ này về false ngay lúc gọi, không đợi animation đóng xong.
+Muốn làm mới dữ liệu của popup đang mở thì gọi thẳng hàm refresh của nó, đừng gọi OpenPopup lần nữa.
+----------------------------------
+
+
 ## 1.2.11
 - Fix lỗi Broadcast khi mở popup
 - Thêm OnUIPopupAwake (chỉ gọi 1 lần)

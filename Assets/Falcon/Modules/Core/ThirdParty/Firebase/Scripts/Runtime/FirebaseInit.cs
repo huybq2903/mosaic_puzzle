@@ -13,7 +13,7 @@ using Falcon.Modules.Core.ThirdParty.Ump.Runtime;
 using Firebase;
 using UnityEngine;
 using Firebase.Analytics;
-//using Firebase.Crashlytics;
+using Firebase.Crashlytics;
 using Firebase.Extensions;
 
 namespace Falcon.Modules.Core.ThirdParty.Firebase.Scripts.Runtime
@@ -72,19 +72,23 @@ namespace Falcon.Modules.Core.ThirdParty.Firebase.Scripts.Runtime
                     if (dependencyStatus == DependencyStatus.Available)
                     {
                         isInitialize = true;
+#if ENABLE_DEBUG_LOG
                         Debug.Log("Firebase init success");
+#endif
                         SetFirebaseUserId();
                     FirebaseApp app = FirebaseApp.DefaultInstance;
 
-                    //Crashlytics.IsCrashlyticsCollectionEnabled = true;
+                    Crashlytics.IsCrashlyticsCollectionEnabled = true;
                     
                     // When this property is set to true, Crashlytics will report all
                     // uncaught exceptions as fatal events. This is the recommended behavior.
-                    //Crashlytics.ReportUncaughtExceptionsAsFatal = true;
+                    Crashlytics.ReportUncaughtExceptionsAsFatal = true;
                     }
                     else
                     {
+#if ENABLE_DEBUG_LOG
                         Debug.LogError($"Could not resolve all Firebase dependencies: {dependencyStatus}");
+#endif
                     }
                 });
         }

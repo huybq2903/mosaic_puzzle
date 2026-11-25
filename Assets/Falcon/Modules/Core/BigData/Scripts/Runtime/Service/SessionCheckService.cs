@@ -109,6 +109,10 @@ namespace Falcon.Modules.Core.BigData
             log.avgFps = perf.AvgFps;
             log.frameDropCount = perf.FrameDropCount;
             log.memoryWarningCount = perf.MemoryWarningCount;
+            // Lấy qua Instance cùng lý do trên (dựng lười, chỉ lúc pause / tick)
+            var heartbeat = LevelHeartbeatService.Instance;
+            log.apsRefreshDisabled = heartbeat.ApsRefreshDisabled;
+            log.apsRefreshMaxMs = heartbeat.ApsRefreshMaxMs;
             return log;
         }
 

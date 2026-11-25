@@ -7,7 +7,9 @@
 
 using System;
 using System.Collections;
+using Falcon.Helpers.Devkit;
 using Falcon.Helpers.EventBus;
+using Falcon.Modules.Core.BigData;
 #if GOOGLE_MOBILE_ADS_ENABLE
 using GoogleMobileAds.Common;
 using Falcon.Modules.Core.SaveLoad.Runtime;
@@ -72,29 +74,40 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
             if (!fired)
             {
                 handled = true;              // "đóng" callback: nếu native nổ muộn cũng bị lambda bỏ qua
+#if ENABLE_DEBUG_LOG
                 Debug.LogError("[UMP] Update timeout.");
+#endif
                 OnShowPopupATT();
                 yield break;
             }
 
             if (err != null)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError($"FalconUMP > Update error {err.ErrorCode}: {err.Message}");
+#endif
                 OnShowPopupATT();
                 yield break;
             }
+
+            //Required trước LoadAndShow = form CMP sẽ hiện -> báo lần hiện popup (BigData đợt 3 B2 / B14b).
+            //⚠ suy "Required ⇒ form hiện" chưa chạy thử: kiểm trên máy EU / debug geography của UMP.
+            if (ConsentInformation.ConsentStatus == ConsentStatus.Required) ReportConsentFormPrompt();
 
             ConsentForm.LoadAndShowConsentFormIfRequired(formError =>
             {
                 OnShowPopupATT();
                 if (formError != null)
                 {
+#if ENABLE_DEBUG_LOG
                     Debug.LogError($"FalconUMP > LoadAndShow error {formError.ErrorCode}: {formError.Message}");
+#endif
                     return;
                 }
                 var consent = ConsentInformation.ConsentStatus;
                 SaveLoadHandler.Save(FALCON_UMP_IS_IN_EUROPE, consent == ConsentStatus.Required);
                 SaveLoadHandler.Save(FALCON_UMP_HAS_CONSENT, consent == ConsentStatus.Obtained);
+                if (consent is ConsentStatus.Required or ConsentStatus.Obtained) ReportAdsConsent();
             });
 #endif
             yield break;
@@ -102,6 +115,9 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
 
         private void OnShowPopupATT()
         {
+#if UNITY_IOS && UNITY_ADS_IOS_SUPPORT_ENABLE
+            ReportAttStatus();
+#endif
 #if UNITY_IOS
             string cmpString = PlayerPrefs.GetString("IABTCF_AddtlConsent");
             bool showAtt = false;
@@ -131,6 +147,7 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
                 if (ATTrackingStatusBinding.GetAuthorizationTrackingStatus() ==
                     ATTrackingStatusBinding.AuthorizationTrackingStatus.NOT_DETERMINED)
                 {
+                    ReportAttPrompt();
                     ATTrackingStatusBinding.RequestAuthorizationTracking();
                 }
             }
@@ -156,6 +173,7 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
                         if (ATTrackingStatusBinding.GetAuthorizationTrackingStatus() ==
                             ATTrackingStatusBinding.AuthorizationTrackingStatus.NOT_DETERMINED)
                         {
+                            ReportAttPrompt();
                             ATTrackingStatusBinding.RequestAuthorizationTracking();
                             showAtt = true;
                         }
@@ -177,7 +195,9 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
             IEnumerator WaitEof()
             {
                 yield return new WaitForEndOfFrame();
+#if ENABLE_DEBUG_LOG
                 Debug.Log("init UMP complete");
+#endif
                 GameEvent<bool>.Emit(FALCON_UMP_COMPLETE);
             }
 
@@ -228,9 +248,131 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
 
 #endif
             GameEvent<bool>.Emit(FALCON_UMP_COMPLETE);
+            ReportAttStatus();
+#if ENABLE_DEBUG_LOG
             Debug.Log("init UMP complete");
+#endif
+        }
+
+        /// <summary>
+        /// Popup ATT của OS sắp hiện (chỉ gọi khi trạng thái còn NOT_DETERMINED) — <c>f_sdk_permission_prompt</c>.
+        /// Bắn TRƯỚC <see cref="ReportAttStatus"/> của lần đổi trạng thái: cùng hàng chờ BigData, khởi động trước.
+        /// </summary>
+        private void ReportAttPrompt()
+        {
+            ReportWhenBigDataReady(() =>
+                FalconBigDataController.Consent.OnPrompt(PromptPermission.Att, PromptKind.System,
+                    PromptTrigger.FirstOpen));
+        }
+
+        private void ReportAttStatus()
+        {
+            ReportWhenBigDataReady(() =>
+                FalconBigDataController.App.ReportAttStatus(
+                    ToFalconAtt(ATTrackingStatusBinding.GetAuthorizationTrackingStatus())));
+        }
+
+        private static AttStatus ToFalconAtt(ATTrackingStatusBinding.AuthorizationTrackingStatus status)
+        {
+            return status switch
+            {
+                ATTrackingStatusBinding.AuthorizationTrackingStatus.AUTHORIZED => AttStatus.Authorized,
+                ATTrackingStatusBinding.AuthorizationTrackingStatus.DENIED => AttStatus.Denied,
+                ATTrackingStatusBinding.AuthorizationTrackingStatus.RESTRICTED => AttStatus.Restricted,
+                _ => AttStatus.NotDetermined
+            };
         }
 
 #endif
+
+#if GOOGLE_MOBILE_ADS_ENABLE
+        private const string _IABTCF_PURPOSE_CONSENTS = "IABTCF_PurposeConsents";
+        private const int _PURPOSE_STORE_ACCESS_INDEX = 0;
+        private const int _PURPOSE_PERSONALISED_ADS_INDEX = 3;
+
+        /// <summary>
+        /// Form CMP sắp hiện — popup xin quyền <c>ads_consent</c> + trạm tải <c>consent_shown</c>. BigData sẵn sàng thì
+        /// gọi ngay (giờ trạm tải đúng lúc form hiện); chưa thì chờ như các log quyền khác.
+        /// </summary>
+        private void ReportConsentFormPrompt()
+        {
+            ReportWhenBigDataReady(() =>
+            {
+                FalconBigDataController.Consent.OnPrompt(PromptPermission.AdsConsent, PromptKind.System,
+                    PromptTrigger.FirstOpen);
+                FalconBigDataController.Ftue.OnLoadStep(LoadKind.App, LoadStep.ConsentShown);
+            });
+        }
+
+        private void ReportAdsConsent()
+        {
+            ReportWhenBigDataReady(() =>
+            {
+                var purposeConsents = ReadIabTcfString(_IABTCF_PURPOSE_CONSENTS);
+                if (string.IsNullOrEmpty(purposeConsents) ||
+                    purposeConsents.Length <= _PURPOSE_PERSONALISED_ADS_INDEX)
+                    return;
+                var granted = purposeConsents[_PURPOSE_STORE_ACCESS_INDEX] == '1' &&
+                              purposeConsents[_PURPOSE_PERSONALISED_ADS_INDEX] == '1';
+                FalconBigDataController.App.ReportAdsConsent(granted);
+            });
+        }
+
+        private static string ReadIabTcfString(string key)
+        {
+#if UNITY_EDITOR
+            return null;
+#elif UNITY_ANDROID
+            try
+            {
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var preferenceManager = new AndroidJavaClass("android.preference.PreferenceManager");
+                using var prefs =
+                    preferenceManager.CallStatic<AndroidJavaObject>("getDefaultSharedPreferences", activity);
+                return prefs.Call<string>("getString", key, null);
+            }
+            catch (Exception e)
+            {
+#if ENABLE_DEBUG_LOG
+                Debug.LogException(e);
+#endif
+                return null;
+            }
+#elif UNITY_IOS
+            return PlayerPrefs.GetString(key, null);
+#else
+            return null;
+#endif
+        }
+#endif
+
+        private const float _BIG_DATA_WAIT_SECONDS = 60f;
+
+        private void ReportWhenBigDataReady(Action report)
+        {
+            StartCoroutine(WaitBigDataThen(report));
+        }
+
+        private static IEnumerator WaitBigDataThen(Action report)
+        {
+            var waitUntil = Time.realtimeSinceStartup + _BIG_DATA_WAIT_SECONDS;
+            while (!MySingletonService.TryGetInstance<FalconBigDataController>(out _))
+            {
+                if (Time.realtimeSinceStartup > waitUntil) yield break;
+                yield return null;
+            }
+
+            try
+            {
+                report();
+            }
+            catch (Exception e)
+            {
+#if ENABLE_DEBUG_LOG
+                Debug.LogException(e);
+#endif
+            }
+        }
     }
 }

@@ -16,7 +16,7 @@ namespace Falcon.Modules.Core.BigData.Tests
     {
         private static FunnelLogService Service(FakeDataPool disk)
         {
-            return new FunnelLogService(disk, null, null, null);
+            return new FunnelLogService(disk, null, null, null, null, null);
         }
 
         [Test]

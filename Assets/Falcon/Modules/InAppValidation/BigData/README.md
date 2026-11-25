@@ -44,29 +44,3 @@ BigdataLogger.CreateDefaultInAppParam = () => new CustomInAppParam
 ## 3. Chi tiết xử lý nội bộ
 
 - Khi user mua thành công, `IAPManager` sẽ gọi `BigdataLogger` để log
-
-### Phễu checkout (§D4)
-
-Module tự bắn đủ 3 mốc, dev game không phải gọi gì:
-
-| Mốc IAP | Log BigData |
-|---|---|
-| Mở billing flow | `Iap.OnStarted(productId, where, localizedPrice, isoCurrencyCode)` |
-| Billing lỗi/huỷ | `Iap.OnFailed(reason)` |
-| Google trả giao dịch treo | `Iap.OnFailed(Pending, transactionId)` |
-| Mua xong (sau validate) | `Iap.OnPurchased(param)` |
-
-`where` lấy từ tham số `where` của `IAPManager.Purchase(...)` — game nên truyền hằng `FIapPlacement`
-để join được cross-game.
-
-Map `PurchaseFailureReason` (Unity IAP) → `IapPurchaseFailReason`:
-
-| Unity IAP | BigData |
-|---|---|
-| `UserCancelled` | `UserCanceled` |
-| `ProductUnavailable` | `ItemUnavailable` |
-| `PurchasingUnavailable`, `StoreNotConnected`¹ | `BillingUnavailable` |
-| `DuplicateTransaction`, `ExistingPurchasePending` | `DeveloperError` |
-| còn lại | `Unknown` |
-
-¹ Chỉ có từ Unity IAP 5.0 — trên IAP 4.x nhánh này bị `versionDefines` cắt khỏi build, module chạy được cả hai bản.

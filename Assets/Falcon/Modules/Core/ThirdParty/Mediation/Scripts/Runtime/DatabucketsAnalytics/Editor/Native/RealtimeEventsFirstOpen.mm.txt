@@ -1,0 +1,28 @@
+#import <Foundation/Foundation.h>
+#include <math.h>
+#include <stdint.h>
+
+// Read existing metadata only. Creating the directory would fabricate a creation date.
+extern "C" int64_t RTE_ReadDocumentsCreationDate()
+{
+    @autoreleasepool
+    {
+        NSFileManager *manager = [NSFileManager defaultManager];
+        NSURL *documents = [[manager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] firstObject];
+        NSString *path = documents.path;
+        if (path == nil) return -1;
+        // Unity exports may disable Objective-C exceptions. Use Foundation's error result.
+        NSError *error = nil;
+        NSDictionary *attributes = [manager attributesOfItemAtPath:path error:&error];
+        if (attributes == nil || error != nil) return -1;
+        NSDate *created = attributes[NSFileCreationDate];
+        if (![created isKindOfClass:[NSDate class]]) return -1;
+
+        double milliseconds = floor([created timeIntervalSince1970] * 1000.0);
+        double now = floor([[NSDate date] timeIntervalSince1970] * 1000.0);
+        // Validate before conversion; invalid or future metadata is unknown, never "now".
+        if (!isfinite(milliseconds) || milliseconds <= 0 || milliseconds >= (double)INT64_MAX || milliseconds > now)
+            return -1;
+        return (int64_t)milliseconds;
+    }
+}

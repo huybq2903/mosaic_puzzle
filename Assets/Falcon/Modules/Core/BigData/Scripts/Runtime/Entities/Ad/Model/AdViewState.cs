@@ -23,7 +23,13 @@ namespace Falcon.Modules.Core.BigData
         public AdType type;
         public string adWhere;
         public string adWhen;
+
+        /// <summary>Lượt chơi kích hoạt lần chiếu — xem <see cref="AdViewParam.triggerPlayTurnId"/>.</summary>
+        public string triggerPlayTurnId;
         public string adMediation;
+
+        /// <summary>Thuật toán load của đợt — xem <see cref="AdViewParam.adAlgorithm"/>.</summary>
+        public string adAlgorithm;
 
         /// <summary>Đã bao lâu kể từ lúc xin ad (ms); null nếu view tự sinh lúc xoay (không đi từ request nào).</summary>
         public int? sinceRequestMs;
@@ -69,14 +75,122 @@ namespace Falcon.Modules.Core.BigData
             public long ShownAtMillis;
             public string Where;
             public string When;
+            public string TriggerTurnId;
             public string Mediation;
             public bool Clicked;
 
             /// <summary>View đã bị impression TIÊU THỤ — mốc show/impression kế tiếp chạm vào là dấu hiệu thiếu request mới, phải xoay id (án dup 5% loader báo 03/09).</summary>
             public bool ImpressionStamped;
+
+            /// <summary>Thuật toán load của ĐỢT này — thuộc tính cả đợt, mọi unit trong đợt giống nhau.</summary>
+            public string Algorithm;
+
+            /// <summary>
+            /// Ad unit ĐÃ CHIẾU của view này — ghi ở mốc impression (mediation truyền unit ở đó).
+            /// Dùng cho mốc close: close thuộc đúng view đã chiếu nên đây là sự thật, không suy đoán.
+            /// </summary>
+            public string ImpressionUnitId;
         }
 
+        /// <summary>Slot theo format — view MỚI NHẤT đã xin (tức ad sắp chiếu / vừa preload).</summary>
         private readonly Dictionary<AdType, AdView> _viewByType = new();
+
+        /// <summary>
+        ///     View ĐANG CHIẾU — đã qua mốc show, chưa qua mốc close.
+        ///     <br/>Vì sao phải tách khỏi slot (sửa 16/10, án "ad_close mồ côi" của loader): mediation
+        ///     PRELOAD ad kế tiếp ngay sau khi ad hiện tại lên hình, nên lúc user bấm đóng thì slot
+        ///     đã là view MỚI — close bị đóng dấu id của một request chưa bao giờ hiện. Loader đo
+        ///     được: 99,9% close mồ côi mang id như vậy, khoảng cách p50 = 52s (reward) / 33s
+        ///     (inter) đúng bằng thời gian xem; tỉ lệ 46% reward, 14% inter.
+        ///     <br/>Họ Ở LẠI MÀN HÌNH (banner / MREC / collapsible / native — xem
+        ///     <see cref="StaysOnScreen"/>) KHÔNG dùng sổ này: id của họ là id INSTANCE theo hợp
+        ///     đồng, và họ không có mốc close.
+        /// </summary>
+        private readonly Dictionary<AdType, AdView> _onScreenByType = new();
+
+        private AdType? _lastFullScreenType;
+        private long _lastFullScreenClosedAtMillis;
+
+        /// <summary>
+        ///     Quảng cáo TOÀN MÀN vừa đóng trong phiên này, và bao lâu kể từ lúc đóng (giây) — để
+        ///     dòng của họ dính-màn trả lời được *"native này diễn sau loại ad nào thì ăn hơn"*
+        ///     (yêu cầu owner 19/10).
+        ///     <br/>CỐ Ý không persist qua phiên: nghĩa của nó là "trong phiên này", nói được rành
+        ///     rọt — persist thì sinh ra những con số vài ngày mà không ai biết phải cắt ở đâu.
+        ///     <br/>CỐ Ý không cắt ngưỡng ở client: gửi cả hai field, phía đọc tự chọn "trong vòng
+        ///     mấy giây mới tính là liền sau". Ngưỡng là câu hỏi phân tích, không phải hằng số SDK.
+        ///     <br/>Ghi ở mốc ĐÓNG, nên ca mediation quên bắn close thì field vắng mặt — đúng hơn là
+        ///     đoán theo mốc show.
+        /// </summary>
+        public (AdType? format, int? secAgo) LastFullScreenAd(long nowMillis)
+        {
+            if (!_lastFullScreenType.HasValue) return (null, null);
+
+            return (_lastFullScreenType,
+                (int)Math.Max(0, (nowMillis - _lastFullScreenClosedAtMillis) / 1000));
+        }
+
+        /// <summary>
+        ///     Format Ở LẠI trên màn hình: banner, MREC, collapsible banner, native. Điểm chung
+        ///     DUY NHẤT mà luật này đứng trên — <b>không có mốc <c>close</c></b>: chúng nằm trong UI
+        ///     của game, biến mất cùng cái UI đó, chẳng mediation nào bắn callback "đã đóng". Kéo
+        ///     theo hai luật: không vào sổ "đang chiếu", và <c>adViewId</c> là id của INSTANCE nên
+        ///     không xoay id khi impression lặp (banner tự refresh thì N impression chung một id,
+        ///     bản tin cụm mang <c>impressionCount</c>).
+        ///     <br/>Họ còn lại (interstitial, reward, app open) chiếm cả màn rồi đóng: một id một
+        ///     lần chiếu, có close, và cần sổ "đang chiếu" để close không bị ad vừa preload tráo id.
+        ///     <br/>Vì sao là VỊ TỪ chứ không phải <c>== AdType.Banner</c> (sửa 19/10): ba format
+        ///     kia cũng không có close, nên so sánh bằng là xếp chúng vào họ fullscreen → mốc show
+        ///     ghi chúng vào sổ "đang chiếu" rồi <b>kẹt ở đó</b> chờ một close không bao giờ đến, và
+        ///     mọi mốc sau của format đó (impression/click) bị đóng dấu id của view kẹt.
+        ///     <br/>⚠ Mức độ: đây là lỗi <b>chờ sẵn</b>, không phải lỗi đang làm sai dữ liệu — đội
+        ///     Mediation xác nhận 19/10 là <b>chưa game nào dùng MREC</b>, và collapsible banner của
+        ///     AdMob <b>không tự refresh</b> (một creative cố định). Sửa trước vì nó rẻ và vì ngày
+        ///     có game bật thì không ai đi dò lại nhánh này.
+        ///     <br/>⚠ GIỚI HẠN còn nguyên: sổ khoá theo <see cref="AdType"/> nên N view cùng họ chạy
+        ///     SONG SONG (native nhiều ô trên một màn, hay hai ad unit cùng format) dùng chung một
+        ///     id — đúng giới hạn loader đã khai ở audit 12/08. Tách được chỉ khi mediation truyền
+        ///     <c>adUnitId</c> ngay mốc request, mà <see cref="AdViewParam"/> hiện không có field đó.
+        /// </summary>
+        public static bool StaysOnScreen(AdType type)
+        {
+            return type is AdType.Banner or AdType.MREC or AdType.CollapsibleBanner or AdType.Native;
+        }
+
+        /// <summary>
+        ///     Format có thể có NHIỀU cái trên màn cùng lúc — hiện chỉ <see cref="AdType.Native"/>,
+        ///     và đó là lý do người ta dùng native (nhiều ô trong UI: popup kết quả, danh sách shop).
+        ///     <br/>Với format như vậy, SDK <b>không phát <c>adViewId</c></b>: mọi mốc chỉ mang
+        ///     <see cref="AdType"/> nên không có cách nào biết mốc này thuộc ô nào, mà dán id của ô
+        ///     mới nhất lên là một lời khẳng định không có bằng chứng — đúng thứ loader đã gạt ở án
+        ///     "ad_close mồ côi" (họ từ chối vá bằng cách ghép theo thời gian). Vắng mặt = KHÔNG BIẾT.
+        ///     <br/>Kéo theo: <c>fillLatencyMs</c> cũng vắng (không biết thuộc ô nào thì cũng không
+        ///     biết nó đi từ lần xin nào), dòng request không mang id (nếu mang thì nó thành
+        ///     "request không bao giờ có impression" = <b>fill-fail giả</b> cho mọi native), và
+        ///     chỗ chiếu không được lấy từ cache (cache chỉ biết ô mới nhất).
+        ///     <br/>Đổi lại thì mất: phễu fill và mối nối xin→hiện của native. Chấp nhận — hai số đó
+        ///     gần như không ai hỏi, còn id sai là số có người tin.
+        ///     <br/>Ngày mediation truyền được <c>adUnitId</c> ở mốc request thì khoá sổ theo
+        ///     <c>(format, adUnitId)</c>, lúc đó native có id THẬT thay cho vắng mặt.
+        /// </summary>
+        public static bool CanHaveManyOnScreen(AdType type)
+        {
+            // ⚠ ĐIỀU KIỆN THÊM FORMAT VÀO ĐÂY: ngày nào một màn có HAI cái cùng format (hai ô MREC
+            // trên một popup chẳng hạn) thì thêm format đó vào danh sách này — một dòng. Với MREC
+            // và collapsible, giả định "một cái một màn" hiện an toàn, nên chúng vẫn có id.
+            return type is AdType.Native;
+        }
+
+        /// <summary>
+        ///     View của LẦN CHIẾU ĐANG DIỄN RA: ưu tiên view đang trên màn hình, không có thì mới
+        ///     lấy slot. Mọi mốc nói về "lần xem hiện tại" (impression, click, close, đọc id) đi
+        ///     qua đây — chỉ <see cref="Open"/> và <see cref="SetContext"/> làm việc với slot.
+        /// </summary>
+        private AdView Current(AdType type)
+        {
+            if (!StaysOnScreen(type) && _onScreenByType.TryGetValue(type, out var onScreen)) return onScreen;
+            return _viewByType.GetValueOrDefault(type);
+        }
 
         /// <summary>
         /// Mở vòng đời một lần xem ad: sinh <see cref="AAdLog.adViewId"/> và giữ vào slot
@@ -86,14 +200,29 @@ namespace Falcon.Modules.Core.BigData
         /// <returns>adViewId vừa sinh — caller gắn lên log (id là của SDK nên không nằm trong param).</returns>
         public string Open(AdViewParam param, long nowMillis)
         {
+            // Format nhiều-ô-một-lúc không có sổ: xem CanHaveManyOnScreen
+            if (CanHaveManyOnScreen(param.type)) return null;
+
             var id = Guid.NewGuid().ToString();
+
+            // Hai họ field, hai cách đối xử — đợt mới KHÔNG được xoá sạch mọi thứ:
+            //  · Where/When là của RIÊNG một lần chiếu (preload chưa biết chiếu ở đâu; đợt sau có
+            //    thể chiếu chỗ khác) ⇒ reset, mang sang là "dán ngữ cảnh đoán".
+            //  · Mediation/Algorithm là của TẦNG HẠ TẦNG đang chạy, không đổi giữa hai đợt ⇒ giữ
+            //    lại khi đợt mới không khai. Đây cũng đúng luật mà ApplyContext vốn đã áp cho
+            //    Mediation ("param bỏ trống thì lấy cache") — Open là chỗ duy nhất trước đây ném
+            //    cache đi, nên khai một lần ở init của mediation là MẤT từ đợt thứ hai (án 26/10:
+            //    phiếu Mediation hướng dẫn khai ở chỗ mở van, mà người đọc hiểu là khai đầu phiên).
+            var previous = _viewByType.GetValueOrDefault(param.type);
             _viewByType[param.type] = new AdView
             {
                 Id = id,
                 RequestedAtMillis = nowMillis,
                 Where = param.adWhere,
                 When = param.adWhen,
-                Mediation = param.adMediation
+                TriggerTurnId = param.triggerPlayTurnId,
+                Mediation = Carry(param.adMediation, previous?.Mediation),
+                Algorithm = Carry(param.adAlgorithm, previous?.Algorithm)
             };
             return id;
         }
@@ -109,7 +238,30 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public string CurrentId(AdType type)
         {
-            return _viewByType.GetValueOrDefault(type)?.Id;
+            return Current(type)?.Id;
+        }
+
+        /// <summary>
+        /// Id view cho dòng LOAD — chỉ trả khi view trong Ô CHƯA tiêu thụ (chưa có impression),
+        /// ngược lại trả null.
+        /// <br/>⚠ Đọc THẲNG ô (<see cref="_viewByType"/>), KHÔNG qua <see cref="Current"/>: load
+        /// luôn thuộc ĐỢT XIN GẦN NHẤT, mà <c>Current</c> lại ưu tiên view ĐANG CHIẾU. Ca thật:
+        /// mediation preload ad kế tiếp NGAY TRONG LÚC user đang xem (đúng án close-mồ-côi) — lúc
+        /// đó <c>Current</c> trả view đang chiếu (đã tiêu thụ) nên dòng load của đợt mới sẽ mất id,
+        /// dù đợt mới đang mở ngay trong ô.
+        /// <br/>Vì sao không dùng <see cref="CurrentId"/>: ô giữ "view xin gần nhất" và KHÔNG ai xoá
+        /// khi ad chiếu xong, nên lần load rơi vào khoảng "ad vừa chiếu xong – đợt sau chưa mở van"
+        /// sẽ nhận id của ad VỪA CHIẾU — dán sai còn tệ hơn để trống (bên kho vẫn nối được bằng
+        /// <c>adUnitId</c>).
+        /// <br/>Format ở lại trên màn hình (banner) thì KHÔNG áp luật "đã tiêu thụ": một banner
+        /// instance đẻ nhiều impression mà vẫn là view đó, các lần refill tiếp theo vẫn thuộc nó.
+        /// </summary>
+        public string PendingViewId(AdType type)
+        {
+            var view = _viewByType.GetValueOrDefault(type);
+            if (view == null) return null;
+
+            return view.ImpressionStamped && !StaysOnScreen(type) ? null : view.Id;
         }
 
         /// <summary>
@@ -120,15 +272,16 @@ namespace Falcon.Modules.Core.BigData
         /// nối request còn hơn một id bị tính tiền N lần, đúng án dup 5% loader báo). View xoay
         /// giữ context (chỗ chiếu/ngữ cảnh/mediation là dữ liệu thật của format), nhưng
         /// fill-latency null (không đi từ request nào — không bịa) và cờ click đời trước không lây.
-        /// <br/>Banner KHÔNG BAO GIỜ xoay: id banner là id instance theo hợp đồng — N impression
-        /// chung id là đúng thiết kế, xoay là phá ngữ nghĩa cụm.
+        /// <br/>Họ Ở LẠI MÀN HÌNH (<see cref="StaysOnScreen"/>) KHÔNG BAO GIỜ xoay: id của họ là id
+        /// instance theo hợp đồng — N impression chung id là đúng thiết kế, xoay là phá ngữ nghĩa cụm.
         /// </summary>
         /// <returns>(adViewId, fillLatencyMs, rotated) — id null nếu format chưa từng có request; caller cảnh báo khi rotated.</returns>
         public (string adViewId, int? fillLatencyMs, bool rotated) StampImpression(AdType type, long nowMillis)
         {
-            if (!_viewByType.TryGetValue(type, out var view)) return (null, null, false);
+            var view = Current(type);
+            if (view == null) return (null, null, false);
 
-            if (view.ImpressionStamped && type != AdType.Banner)
+            if (view.ImpressionStamped && !StaysOnScreen(type))
             {
                 RotateConsumedView(view);
                 view.ImpressionStamped = true;
@@ -166,14 +319,43 @@ namespace Falcon.Modules.Core.BigData
         /// lúc đó, các mốc sau (show / impression / close) tự mang theo.
         /// </summary>
         /// <returns>false nếu format này chưa từng đi qua request (không có view nào để ghi).</returns>
-        public bool SetContext(AdType type, string adWhere = null, string adWhen = null, string adMediation = null)
+        public bool SetContext(AdType type, string adWhere = null, string adWhen = null,
+            string adMediation = null, string adAlgorithm = null, string triggerPlayTurnId = null)
         {
             if (!_viewByType.TryGetValue(type, out var view)) return false;
             if (!string.IsNullOrEmpty(adWhere)) view.Where = adWhere;
             if (!string.IsNullOrEmpty(adWhen)) view.When = adWhen;
+            if (!string.IsNullOrEmpty(triggerPlayTurnId)) view.TriggerTurnId = triggerPlayTurnId;
             if (!string.IsNullOrEmpty(adMediation)) view.Mediation = adMediation;
+            if (!string.IsNullOrEmpty(adAlgorithm)) view.Algorithm = adAlgorithm;
             return true;
         }
+
+        /// <summary>
+        /// Ghi ad unit đã chiếu cho view hiện tại (gọi ở mốc impression) — false nếu format chưa có
+        /// view nào.
+        /// </summary>
+        public bool SetImpressionUnit(AdType type, string adUnitId)
+        {
+            if (string.IsNullOrEmpty(adUnitId)) return false;
+
+            var view = Current(type);
+            if (view == null) return false;
+
+            view.ImpressionUnitId = adUnitId;
+            return true;
+        }
+
+        /// <summary>
+        /// Thuật toán load của ĐỢT hiện tại — đọc thẳng ô, nên vẫn trả giá trị sau khi ad đã chiếu
+        /// (thuật toán là thuộc tính của tầng mediation đang chạy, không phải của một lần chiếu).
+        /// Dùng cho dòng LOAD: mediation khai một lần qua <c>UpdateContext</c> là mọi dòng load của
+        /// format đó mang theo, khỏi phải truyền lại trong từng <c>AdLoadResultParam</c>.
+        /// </summary>
+        public string CurrentAlgorithm(AdType type) => _viewByType.GetValueOrDefault(type)?.Algorithm;
+
+        /// <summary>Ad unit đã chiếu của view hiện tại — null nếu chưa có impression nào mang unit.</summary>
+        public string ImpressionUnitId(AdType type) => Current(type)?.ImpressionUnitId;
 
         /// <summary>
         /// Ảnh chụp lần xem ad hiện tại của format này (null nếu chưa từng có request) — bản sao,
@@ -181,14 +363,17 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public AdViewSnapshot TakeSnapshot(AdType type, long nowMillis)
         {
-            if (!_viewByType.TryGetValue(type, out var view)) return null;
+            var view = Current(type);
+            if (view == null) return null;
             return new AdViewSnapshot
             {
                 adViewId = view.Id,
                 type = type,
                 adWhere = view.Where,
                 adWhen = view.When,
+                triggerPlayTurnId = view.TriggerTurnId,
                 adMediation = view.Mediation,
+                adAlgorithm = view.Algorithm,
                 sinceRequestMs = MillisSince(view.RequestedAtMillis, nowMillis),
                 sinceShownMs = MillisSince(view.ShownAtMillis, nowMillis)
             };
@@ -200,13 +385,13 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public string CurrentPlacement(AdType type)
         {
-            return _viewByType.GetValueOrDefault(type)?.Where;
+            return Current(type)?.Where;
         }
 
         /// <summary>Ngữ cảnh kích hoạt đã biết của lần xem ad hiện tại (null nếu chưa ai ghi).</summary>
         public string CurrentContext(AdType type)
         {
-            return _viewByType.GetValueOrDefault(type)?.When;
+            return Current(type)?.When;
         }
 
         /// <summary>
@@ -215,8 +400,8 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public int? MillisSinceRequest(AdType type, long nowMillis)
         {
-            if (!_viewByType.TryGetValue(type, out var view)) return null;
-            return MillisSince(view.RequestedAtMillis, nowMillis);
+            var view = Current(type);
+            return view == null ? null : MillisSince(view.RequestedAtMillis, nowMillis);
         }
 
         /// <summary>
@@ -231,11 +416,17 @@ namespace Falcon.Modules.Core.BigData
         {
             if (!_viewByType.TryGetValue(param.type, out var view)) return (null, null, false);
 
-            var rotated = view.ImpressionStamped && param.type != AdType.Banner;
+            var rotated = view.ImpressionStamped && !StaysOnScreen(param.type);
             if (rotated) RotateConsumedView(view);
 
             view.ShownAtMillis = nowMillis;
             ApplyContext(param, view);
+
+            // Từ đây tới lúc close, mọi mốc của format này thuộc về VIEW NÀY — kể cả khi mediation
+            // preload ad kế tiếp vào slot giữa chừng. Show mới đè sổ: ca thiếu close (app bị kill,
+            // mediation quên bắn) tự lành ở lần chiếu sau chứ không kẹt vĩnh viễn.
+            if (!StaysOnScreen(param.type)) _onScreenByType[param.type] = view;
+
             return (view.Id, MillisSince(view.RequestedAtMillis, nowMillis), rotated);
         }
 
@@ -246,7 +437,14 @@ namespace Falcon.Modules.Core.BigData
         /// <returns>false nếu format này chưa có view nào (click không thuộc về ai — caller cảnh báo).</returns>
         public bool MarkClicked(AdType type)
         {
-            if (!_viewByType.TryGetValue(type, out var view)) return false;
+            // Native không giữ sổ view (CanHaveManyOnScreen) nên không có chỗ ghi cờ — nhưng đây
+            // KHÔNG phải lỗi tích hợp, nên trả true để caller khỏi bắn warning mỗi lần người chơi
+            // bấm. ⚠ Hệ quả: click của native không lên wire được (nó vốn không có mốc close để
+            // chở cờ) — CTR native phải đọc ở dashboard mediation.
+            if (CanHaveManyOnScreen(type)) return true;
+
+            var view = Current(type);
+            if (view == null) return false;
             view.Clicked = true;
             return true;
         }
@@ -263,10 +461,21 @@ namespace Falcon.Modules.Core.BigData
         /// <returns>(adViewId, shownDurationSec) — thời lượng null nếu chưa từng qua mốc show.</returns>
         public (string adViewId, int? shownDurationSec) MarkClosed(AdCloseParam param, long nowMillis)
         {
-            if (!_viewByType.TryGetValue(param.type, out var view)) return (null, null);
+            var view = Current(param.type);
+            if (view == null) return (null, null);
 
             ApplyContext(param, view);
             param.hasClick ??= view.Clicked;
+
+            // Lần chiếu khép lại: các mốc sau thuộc về view trong slot (ad vừa preload)
+            _onScreenByType.Remove(param.type);
+
+            if (!StaysOnScreen(param.type))
+            {
+                _lastFullScreenType = param.type;
+                _lastFullScreenClosedAtMillis = nowMillis;
+            }
+
             return (view.Id,
                 view.ShownAtMillis > 0 ? (int?)Math.Max(0, (nowMillis - view.ShownAtMillis) / 1000) : null);
         }
@@ -280,14 +489,17 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         public void ApplyContext(AdViewParam param, AdType type)
         {
-            if (_viewByType.TryGetValue(type, out var view)) ApplyContext(param, view);
+            var view = Current(type);
+            if (view != null) ApplyContext(param, view);
         }
 
         private static void ApplyContext(AdViewParam param, AdView view)
         {
             param.adWhere = Merge(param.adWhere, ref view.Where);
             param.adWhen = Merge(param.adWhen, ref view.When);
+            param.triggerPlayTurnId = Merge(param.triggerPlayTurnId, ref view.TriggerTurnId);
             param.adMediation = Merge(param.adMediation, ref view.Mediation);
+            param.adAlgorithm = Merge(param.adAlgorithm, ref view.Algorithm);
         }
 
         /// <summary>
@@ -295,6 +507,13 @@ namespace Falcon.Modules.Core.BigData
         /// impression trước khi decor chạy, không coi là trống thì cache sẽ bị ghi đè bằng
         /// "Unknown" và mất luôn chỗ chiếu mà game đã báo lúc request.
         /// </summary>
+        /// <summary>
+        /// Giá trị của đợt mới nếu có, không thì giữ giá trị đợt trước — dùng cho field thuộc TẦNG
+        /// HẠ TẦNG (mediation, thuật toán load), thứ không đổi giữa hai đợt xin ad.
+        /// </summary>
+        private static string Carry(string incoming, string previous)
+            => string.IsNullOrEmpty(incoming) ? previous : incoming;
+
         private static string Merge(string value, ref string cached)
         {
             if (string.IsNullOrEmpty(value) || value == FParam.UNKNOWN) return cached ?? value;

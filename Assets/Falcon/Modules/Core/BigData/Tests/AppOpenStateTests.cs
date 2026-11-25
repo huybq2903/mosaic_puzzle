@@ -22,6 +22,40 @@ namespace Falcon.Modules.Core.BigData.Tests
             Assert.AreEqual(1, param.openIndex);
         }
 
+        // ---- startup_duration_ms (AbsentNotZero 12/11, mục 1) ----
+
+        [Test]
+        public void Cold_WithoutPriorPause_CarriesStartup()
+        {
+            var param = new AppOpenState().TryOpen(T0, THRESHOLD, startupMillis: 3200);
+            Assert.AreEqual(3200, param.startupDurationMs);
+        }
+
+        [Test]
+        public void Cold_AfterTheAppWasBackgrounded_StartupIsAbsent()
+        {
+            // OS mở process ngầm (push / prefetch), app nằm nền, người chơi mở sau → quãng chờ bị
+            // đếm vào số đo. Vắng còn hơn một số dài vô nghĩa.
+            var state = new AppOpenState();
+            state.MarkPause(Sec(1));
+            var param = state.TryOpen(Sec(1800), THRESHOLD, startupMillis: 1_800_000);
+
+            Assert.AreEqual(LaunchType.Cold, param.launchType);
+            Assert.IsNull(param.startupDurationMs);
+        }
+
+        [Test]
+        public void Hot_NeverCarriesStartup()
+        {
+            var state = new AppOpenState();
+            state.TryOpen(T0, THRESHOLD, startupMillis: 3200);
+            state.MarkPause(Sec(10));
+            var hot = state.TryOpen(Sec(130), THRESHOLD, startupMillis: 999);
+
+            Assert.AreEqual(LaunchType.Hot, hot.launchType);
+            Assert.IsNull(hot.startupDurationMs);
+        }
+
         [Test]
         public void ColdOpen_NeverFiltered_EvenWithHugeThreshold()
         {
@@ -239,6 +273,33 @@ namespace Falcon.Modules.Core.BigData.Tests
 
             Assert.IsFalse(param.openSource.HasValue);
             Assert.IsNull(param.extraMeta);
+        }
+
+        // ---- Hot sau ad toàn màn (AdShowSkipped 12/11, mục 3) ----
+
+        [Test]
+        public void Hot_AfterPauseCausedByFullscreenAd_IsNotLogged_ButIndexAdvances()
+        {
+            // Đóng ad 60s ≠ người chơi quay lại app sau 60s nằm nền.
+            var state = new AppOpenState();
+            state.TryOpen(T0, THRESHOLD);
+            state.MarkPause(Sec(10), byFullscreenAd: true);
+            Assert.IsNull(state.TryOpen(Sec(70), THRESHOLD));
+
+            state.MarkPause(Sec(100));
+            var real = state.TryOpen(Sec(400), THRESHOLD);
+            Assert.IsNotNull(real, "Cờ ad chỉ áp cho ĐÚNG lần pause đó");
+            Assert.AreEqual(300, real.backgroundDurationSec, "Nền đo từ pause thật, không cộng thời gian xem ad");
+            Assert.AreEqual(3, real.openIndex, "openIndex vẫn đếm lần bị bỏ, như mọi lần lọc");
+        }
+
+        [Test]
+        public void Hot_AfterOrdinaryPause_StillLogged()
+        {
+            var state = new AppOpenState();
+            state.TryOpen(T0, THRESHOLD);
+            state.MarkPause(Sec(10), byFullscreenAd: false);
+            Assert.IsNotNull(state.TryOpen(Sec(70), THRESHOLD));
         }
     }
 }

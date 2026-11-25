@@ -7,13 +7,13 @@ using Falcon.Modules.Level.Core;
 namespace Falcon.Modules.AnalyticParamsSync
 {
     /// <summary>
-    /// Khi app bị vuốt (interupt context) thì rất khó để gửi log lên server.
-    /// Nếu để dev tự log bản tin độc lập thì sẽ sinh ra rất nhiều luồng gửi bản tin khi ngắt app, gây rất nhiều vấn đề.
-    /// <br/>
-    /// IAppPauseLogGenerator là interface để hệ thống thu thập các service cần log khi app ngắt, tạo batch và gửi lên 1 luồng duy nhất, khắc phục vấn đề trên.
-    /// <br/>
-    /// ALevelHeartBeatService là class để người dùng kế thừa, khai báo các tham số về level user đang chơi.
-    /// Khi app bị vuốt, nếu ALevelHeartBeatService.IsPlayingLevel thì sẽ thu thập tham số và gửi 1 bản tin LevelHeartBeatParamV2 để tránh mất toàn bộ tham số khi người dùng drop level.
+    /// Lớp để game kế thừa, khai báo tham số TIẾN ĐỘ của level đang chơi (điểm, số nước, thời gian, booster, extra).
+    /// <br/>Từ hợp đồng đợt 3 B5 (ký 23/11) <b>BigData tự bắn heartbeat</b> — lúc app xuống nền và lúc
+    /// <c>Level.OnPauseExit</c> — và hỏi lớp này lấy tham số tại lúc bắn (<see cref="ILevelTurnParamsProvider"/>).
+    /// Lớp này <b>thôi tự sinh dòng</b>: trước đây nó là <c>IAppPauseLogGenerator</c> tự gửi heartbeat lúc xuống nền, giữ
+    /// lại thì mỗi lần xuống nền ra HAI dòng. Với game dùng lớp này, số dòng heartbeat lúc xuống nền không đổi.
+    /// <br/>⚠ Cần BigData có <see cref="ILevelTurnParamsProvider"/> (bản sau 1.7.5) — APS bản này với BigData cũ sẽ
+    /// không còn heartbeat nào. Các property dưới đây phải <b>rẻ và không side effect</b>: SDK gọi chúng trên main thread.
     /// <br/><br/>
     /// <b>Ranh giới bắt buộc/mặc định theo AI-BIẾT</b>: mọi thứ chỉ GAME biết đều abstract —
     /// <see cref="CurrentLevelPlayTime"/>, <see cref="CurrentLevelScore"/>,
@@ -25,7 +25,7 @@ namespace Falcon.Modules.AnalyticParamsSync
     /// timeLimitSec — không phải khai lại); tham số 0/null sẽ vắng mặt khỏi payload chứ không gửi
     /// số giả (§H4).
     /// </summary>
-    public abstract class ALevelHeartBeatService : IAppPauseLogGenerator
+    public abstract class ALevelHeartBeatService : ILevelTurnParamsProvider
     {
         private readonly FLevelManager _levelManager;
 
@@ -34,30 +34,20 @@ namespace Falcon.Modules.AnalyticParamsSync
             _levelManager = levelManager;
         }
 
-        public IEnumerable<IDataLog> GetLogsOnAppPause()
+        public bool FillTurnParams(LevelHeartBeatParamV2 param)
         {
-            if (!IsPlayingLevel) yield break;
+            if (!IsPlayingLevel) return false;
 
-            // Gọi mỗi property đúng một lần: bản cài của game có thể tốn kém hoặc có side effect
+            // Gọi mỗi property đúng một lần mỗi lần SDK hỏi
             var playTime = CurrentLevelPlayTime;
             var score = CurrentLevelScore;
             var totalScore = CurrentLevelTotalScore;
             var movesUsed = CurrentLevelNumberMove;
 
-            var level = LevelData.Instance.level;
-            var param = new LevelHeartBeatParamV2
-            {
-                // Bộ định danh dưới đây SDK cũng tự điền được từ cache của lượt; điền sẵn ở đây làm
-                // lưới an toàn cho ca heartbeat đến mà chưa từng có log Start (vd app restart giữa
-                // màn) — lúc đó cache rỗng và param sẽ trống trơn.
-                playTurnId = _levelManager.PlayTurnId,
-                currentLevel = level,
-                currentLevelId = _levelManager.CurrentMd5LevelDataParam,
-                difficulty = _levelManager.GetLevelDifficulty(level).ToString(),
-
-                boostersUsed = CurrentLevelBoosterUsed,
-                extraMeta = CurrentLevelExtraParams
-            };
+            // Định danh lượt (playTurnId, level, levelId, độ khó) SDK tự điền từ cache — BigData chỉ bắn khi có lượt
+            // mở, nên không còn ca "heartbeat mà chưa từng có Start" cần lưới an toàn ở đây.
+            param.boostersUsed = CurrentLevelBoosterUsed;
+            param.extraMeta = CurrentLevelExtraParams;
 
             // Chỉ điền cái đo được: game không theo dõi score/moves thì để field vắng mặt, đừng gửi
             // 0 — 0 trông như một giá trị hợp lệ nên không ai đi kiểm (§H4)
@@ -65,11 +55,9 @@ namespace Falcon.Modules.AnalyticParamsSync
             if (score > 0) param.score = score;
             if (movesUsed > 0) param.movesUsed = movesUsed;
 
-            // totalScore == 0 (game không có hệ điểm, hoặc màn chưa nạp xong) thì KHÔNG chia:
-            // exception ở đây giết luôn cả batch log lúc app pause, không riêng bản tin này
+            // totalScore == 0 (game không có hệ điểm, hoặc màn chưa nạp xong) thì KHÔNG chia
             if (totalScore > 0) param.levelProgress = (int)Math.Min(100, score * 100L / totalScore);
-
-            yield return new FLevelLog(param);
+            return true;
         }
 
         /// <summary>

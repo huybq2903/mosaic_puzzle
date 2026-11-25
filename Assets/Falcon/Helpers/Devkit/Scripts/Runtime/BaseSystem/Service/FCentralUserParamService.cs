@@ -135,6 +135,25 @@ namespace Falcon.Helpers.Devkit
             {
                 public const string PLATFORM = "platform";
                 public const string APP_VERSION = "appVersion";
+
+                /// <summary>
+                ///     Phiên bản module BigData — GIÁ TRỊ do BigData cấp (qua IFCustomInfoRepository),
+                ///     TÊN khai ở đây để nó vào sổ "key trung tâm": game set common param trùng tên
+                ///     sẽ bị từ chối thay vì bị tham số trung tâm đè im lặng.
+                /// </summary>
+                public const string SDK_VERSION = "sdkVersion";
+
+                /// <summary>
+                ///     Dòng log do NGƯỜI LÀM GAME sinh ra (editor / development build) — GIÁ TRỊ do
+                ///     BigData cấp, TÊN khai ở đây để vào sổ "key trung tâm": game set common param
+                ///     trùng tên sẽ bị từ chối. Đó là lớp chặn cuối cho luật "bản production tuyệt
+                ///     đối không mang cờ test" — không có nó thì một lời
+                ///     <c>Common.Set("isTest", true)</c> trong code game là đủ làm hỏng dữ liệu thật.
+                /// </summary>
+                public const string IS_TEST = "isTest";
+
+                /// <inheritdoc cref="IS_TEST"/>
+                public const string TEST_SOURCE = "testSource";
             }
 
             public static class Device

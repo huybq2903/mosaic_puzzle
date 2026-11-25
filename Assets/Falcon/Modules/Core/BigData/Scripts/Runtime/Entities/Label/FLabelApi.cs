@@ -26,9 +26,11 @@ namespace Falcon.Modules.Core.BigData
     /// </code>
     /// <br/>Một cửa cho cả "nhãn" lẫn "tham số động" — dev không phải phân biệt hai thứ đó.
     /// Key TỰ DO, không phải đăng ký trước.
-    /// <br/>⚠ Van do loader enforce, vượt là server DROP: ≤<see cref="LabelGuardState.MAX_USER_LABEL_KEYS"/>
-    /// key trên một user, value chữ ≤<see cref="LabelGuardState.MAX_VALUE_LENGTH"/> ký tự. SDK chặn
-    /// sớm ở client kèm cảnh báo để khỏi mất dữ liệu trong im lặng.
+    /// <br/>⚠ Van CHỈ có ở SDK (kho xác nhận 12/11 không có van cho nhãn): ≤<see cref="LabelGuardState.MAX_USER_LABEL_KEYS"/>
+    /// key trên một user, value chữ ≤<see cref="LabelGuardState.MAX_VALUE_LENGTH"/> ký tự. Vượt thì SDK
+    /// chặn ở client kèm cảnh báo.
+    /// <br/>⚠ Phía kho (12/11): chỉ <c>f_sdk_ad_view_label</c> có mapping chạy thật. User / session /
+    /// turn / purchase label CHƯA có mapping — kho dựng khi có dòng thật, nên báo loader trước khi bật.
     /// </summary>
     public class FLabelApi
     {
@@ -71,8 +73,7 @@ namespace Falcon.Modules.Core.BigData
 
         /// <summary>
         /// Nhãn cho LẦN XEM AD đang mở của format này — vd đánh dấu ad thuộc một thử nghiệm bidding.
-        /// <br/>⚠ Event <c>f_sdk_ad_view_label</c> đã có trong hợp đồng §D11 (bản 11/08) nhưng còn
-        /// chờ loader mở mapping rule.
+        /// <br/>Mapping <c>f_sdk_ad_view_label</c> phía kho đã chạy (loader xác nhận 12/11).
         /// <br/>Cân nhắc trước khi dùng: một lần xem ad sống ~30 giây, nhãn thường thuộc về PHIÊN
         /// hoặc NGƯỜI CHƠI đúng hơn (cả nhóm ad của user đó cùng nằm trong thử nghiệm).
         /// </summary>
@@ -135,7 +136,7 @@ namespace Falcon.Modules.Core.BigData
         /// </code>
         /// Bundle đi field <c>offerLabels</c> trên chính event offer — cùng cơ chế, cùng trần với
         /// <see cref="Level"/> (xem doc bên đó).
-        /// <br/>⚠ <c>offerLabels</c> NGOÀI hợp đồng §D11 đợt 1 — chờ loader khai mapping.
+        /// <br/>⚠ <c>offerLabels</c>: kho CHƯA đọc field này (loader xác nhận 12/11) — chưa nối.
         /// </summary>
         public void IapOffer(string offerId, string labelKey, object value)
         {

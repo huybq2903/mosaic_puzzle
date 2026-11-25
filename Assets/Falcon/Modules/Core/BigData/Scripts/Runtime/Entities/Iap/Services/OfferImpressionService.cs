@@ -24,8 +24,9 @@ namespace Falcon.Modules.Core.BigData
 
         public OfferImpressionService(
             OfferImpressionCache cache, LogScheduleService logScheduleService,
-            AnalyticConfigService configService)
+            AnalyticConfigService configService, TurnLedgerService turnLedger)
         {
+            _turnLedger = turnLedger;
             _cache = cache;
             _logScheduleService = logScheduleService;
             _configService = configService;
@@ -46,9 +47,12 @@ namespace Falcon.Modules.Core.BigData
         /// Offer bắt đầu hiển thị. Nếu còn offer trước chưa đóng thì offer đó được chốt và log ngay
         /// (kèm warning lúc dev) — surface cũ đã thực sự kết thúc, bỏ đi là mất một impression.
         /// </summary>
+        private readonly TurnLedgerService _turnLedger;
+
         public void OpenOffer(IapOfferParam param)
         {
             if (param == null) return;
+            _turnLedger.OnOfferShown(); // sổ lượt B6: n_offer_shown (chỉ đếm khi có lượt mở)
 
             var (_, replaced) = _cache.Open(param, GraceMillis);
             if (replaced == null) return;

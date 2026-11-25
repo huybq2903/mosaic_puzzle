@@ -15,25 +15,11 @@ using UnityEngine.Scripting;
 namespace Falcon.Modules.Core.BigData
 {
     [Serializable]
-    public class FLevelLog : AFalconLog
+    public class FLevelLog : AFalconLog, IPerfPackCarrier
     {
         public ALevelParamV2 param;
         public int failCount;
         public int playCount;
-
-        /// <summary>
-        /// Số trận thắng liên tiếp tính đến log này (xuyên level + xuyên session, SDK tự tính —
-        /// Fail reset, Skip/drop trong suốt).
-        /// <br/>Đây là chuỗi PHÂN TÍCH chuẩn fleet: một định nghĩa cho mọi game, server replay
-        /// Pass/Fail là kiểm lại được. Nó KHÔNG phải chuỗi TÍNH NĂNG của game (kiểu
-        /// first-attempt-only, drop cũng cắt, có milestone...) — thứ đó là state của game, báo
-        /// bằng <c>Label.User("streak_status", n)</c> + funnel milestone, đừng nhét vào đây:
-        /// mỗi game một định nghĩa là cột này mất so-chéo-game và mất luôn tính tự-kiểm.
-        /// </summary>
-        public int winStreak;
-
-        /// <summary>Như <see cref="winStreak"/> cho chuỗi thua — Pass reset, Skip/drop trong suốt.</summary>
-        public int loseStreak;
 
         /// <summary>
         /// Nhãn của MÀN này (§D11) — SDK-core tự đóng dấu từ kho nhãn vật, game khai qua
@@ -44,6 +30,13 @@ namespace Falcon.Modules.Core.BigData
         /// </summary>
         [FKey(RemoveIfNull = true)] [CanBeNull]
         public Dictionary<string, object> levelLabels;
+
+        /// <summary>
+        /// Sổ thời gian lượt chơi (hợp đồng đợt 3 B6) — SDK tự đóng lúc decor; field phẳng, tên snake theo hợp đồng.
+        /// Null trên Start và trên lượt không có sổ.
+        /// </summary>
+        [FKey(Ignore = true)] [CanBeNull]
+        public Dictionary<string, object> turnLedger;
 
         [Preserve]
         public FLevelLog()
@@ -96,6 +89,9 @@ namespace Falcon.Modules.Core.BigData
             result.Remove(nameof(param));
             foreach (var (key, value) in param.ToDictionary())
                 result.PutIfAbsentAndNotNull(key, value);
+            if (turnLedger != null)
+                foreach (var (key, value) in turnLedger)
+                    result.PutIfAbsentAndNotNull(key, value);
             return result;
         }
     }

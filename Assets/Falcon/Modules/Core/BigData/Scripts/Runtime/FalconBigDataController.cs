@@ -43,12 +43,24 @@ namespace Falcon.Modules.Core.BigData
             FunnelRegistry funnelRegistry, AppOpenLogService appOpenLogService,
             PermissionLogService permissionLogService, LabelLogService labelLogService, EntityLabelService entityLabelService,
             CommonParamRepository commonParamRepository, FPlayerInfoService playerInfoService,
-            LogScheduleService logScheduleService, UiExposureClusterService uiExposureClusterService)
+            LogScheduleService logScheduleService, UiExposureClusterService uiExposureClusterService,
+            LiveOpsLogService liveOpsLogService, FeatureLogService featureLogService,
+            LevelReviveLogService levelReviveLogService, FtueLogService ftueLogService,
+            LevelBoosterLogService levelBoosterLogService, LevelHeartbeatService levelHeartbeatService,
+            PerfScreenLogService perfScreenLogService, TurnLedgerService turnLedgerService,
+            SettingLogService settingLogService, LoadStepLogService loadStepLogService,
+            ConsentAccountService consentAccountService)
         {
+            ConsentApi = new FConsentApi(consentAccountService);
+            AccountApi = new FAccountApi(consentAccountService);
+            SurfaceApi = new FSurfaceApi(perfScreenLogService);
+            SettingApi = new FSettingApi(settingLogService);
             _logScheduleService = logScheduleService;
             _playerInfoService = playerInfoService;
 
-            LevelApi = new FLevelApi(levelLogService, levelTurnService, levelLogDecorService, labelLogService);
+            LevelApi = new FLevelApi(
+                levelLogService, levelTurnService, levelLogDecorService, labelLogService,
+                levelReviveLogService, levelBoosterLogService, levelHeartbeatService, turnLedgerService);
             IapOfferApi = new FIapOfferApi(offerImpressionService);
             AdApi = new FAdApi(adRequestService, labelLogService);
             IapApi = new FIapApi(purchaseAttemptService);
@@ -58,6 +70,9 @@ namespace Falcon.Modules.Core.BigData
             LabelApi = new FLabelApi(labelLogService, entityLabelService);
             CommonApi = new FCommonApi(commonParamRepository);
             UiApi = new FUiApi(uiExposureClusterService);
+            LiveOpsApi = new FLiveOpsApi(liveOpsLogService);
+            FeatureApi = new FFeatureApi(featureLogService);
+            FtueApi = new FFtueApi(ftueLogService, loadStepLogService);
         }
 
         #region Nhóm API theo entity
@@ -75,6 +90,13 @@ namespace Falcon.Modules.Core.BigData
         public FLabelApi LabelApi { get; }
         public FCommonApi CommonApi { get; }
         public FUiApi UiApi { get; }
+        public FLiveOpsApi LiveOpsApi { get; }
+        public FFeatureApi FeatureApi { get; }
+        public FFtueApi FtueApi { get; }
+        public FSurfaceApi SurfaceApi { get; }
+        public FSettingApi SettingApi { get; }
+        public FConsentApi ConsentApi { get; }
+        public FAccountApi AccountApi { get; }
         public FPlayerInfoService PlayerInfo => _playerInfoService;
 
         /// <summary>Lượt chơi level: <c>Level.OnStart/OnPass/OnFail</c>, cache lượt, streak.</summary>
@@ -106,6 +128,27 @@ namespace Falcon.Modules.Core.BigData
 
         /// <summary>Exposure UI (đếm gộp cụm): <c>Ui.OnImpression/OnClicked(surfaceId)</c> — CTR live-op.</summary>
         public static FUiApi Ui => Instance.UiApi;
+
+        /// <summary>Event live-op: <c>LiveOps.DeclareCycle/OnStep/Stamp</c> — xem <see cref="FLiveOpsApi"/>.</summary>
+        public static FLiveOpsApi LiveOps => Instance.LiveOpsApi;
+
+        /// <summary>Tính năng: <c>Feature.State/Step/Stamp</c> — xem <see cref="FFeatureApi"/>.</summary>
+        public static FFeatureApi Feature => Instance.FeatureApi;
+
+        /// <summary>FTUE người chơi mới: <c>Ftue.OnFirstScreen/OnTutorialStart/OnTutorialStep/...</c> — xem <see cref="FFtueApi"/>.</summary>
+        public static FFtueApi Ftue => Instance.FtueApi;
+
+        /// <summary>Màn hiện tại: <c>Surface.Enter("home")</c> / <c>Surface.Enter("popup:…")</c> / <c>Surface.Exit()</c> — xem <see cref="FSurfaceApi"/>.</summary>
+        public static FSurfaceApi Surface => Instance.SurfaceApi;
+
+        /// <summary>Cài đặt âm thanh / nhạc / rung / ngôn ngữ: <c>Setting.DeclareDefaults/Sync/Set/SetLanguage</c> — xem <see cref="FSettingApi"/>.</summary>
+        public static FSettingApi Setting => Instance.SettingApi;
+
+        /// <summary>Popup xin quyền: <c>Consent.OnPrompt</c>, <c>Consent.RequestPush</c> (Android) — xem <see cref="FConsentApi"/>.</summary>
+        public static FConsentApi Consent => Instance.ConsentApi;
+
+        /// <summary>Liên kết tài khoản: <c>Account.OnLink</c>, <c>Account.SetLinkedProviders</c> — xem <see cref="FAccountApi"/>.</summary>
+        public static FAccountApi Account => Instance.AccountApi;
 
         /// <summary>
         /// Hồ sơ người chơi mà SDK đang giữ — đây chính là những con số được đóng lên mọi log

@@ -23,6 +23,49 @@ namespace Falcon.Modules.Core.BigData.Tests
         }
 
         [Test]
+        public void Clone_KeepsAllSevenContextFields_LiveOpsAndFeature()
+        {
+            // Báo lỗi 11/11: thưởng Sky Path / Race đi qua chuỗi grant (EventRewardGranter → ResourceLog → đây)
+            // ra dòng resource không có live_ops_*. Rơi cả 3 field trục tính năng nữa — bảy field cùng lớp nền.
+            var context = Context();
+            context.liveOpsEvent = "sky_path";
+            context.liveOpsCycleId = "cycle_12";
+            context.liveOpsRoundId = "run_7";
+            context.liveOpsStage = 3;
+            context.feature = "guild";
+            context.featureInstanceId = "G_42";
+            context.featureStage = 2;
+
+            var log = new ExtendResourceLog(
+                FlowType.Source, "currency", "coin", "coin", 500, 0, 500, param: context);
+            var param = (ResourceParam)log.param;
+
+            Assert.AreEqual("sky_path", param.liveOpsEvent);
+            Assert.AreEqual("cycle_12", param.liveOpsCycleId);
+            Assert.AreEqual("run_7", param.liveOpsRoundId);
+            Assert.AreEqual(3, param.liveOpsStage);
+            Assert.AreEqual("guild", param.feature);
+            Assert.AreEqual("G_42", param.featureInstanceId);
+            Assert.AreEqual(2, param.featureStage);
+        }
+
+        [Test]
+        public void Clone_DoesNotCarryTheContextCurrencyClass()
+        {
+            // Một context dùng chung cả mẻ grant nhiều loại tiền — hạng tiền của context không phải hạng
+            // của TỪNG giao dịch. Clone để trống, StampCurrencyClass tự tra sổ theo currency.
+            var context = Context();
+            context.currencyClass = FCurrencyClass.Hard;
+
+            // Tên tiền chỉ test này dùng: sổ hạng tiền là static, test khác khai "coin" thì kết quả sai lệch.
+            var log = new ExtendResourceLog(
+                FlowType.Source, "currency", "erl_clone_only_currency", "erl_clone_only_currency", 500, 0, 500,
+                param: context);
+
+            Assert.AreNotEqual(FCurrencyClass.Hard, ((ResourceParam)log.param).currencyClass);
+        }
+
+        [Test]
         public void NullDetailArg_KeepsContextDetail()
         {
             var log = new ExtendResourceLog(

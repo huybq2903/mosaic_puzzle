@@ -46,6 +46,36 @@ namespace Falcon.Modules.Core.BigData
             }
         }
 
+        /// <summary>
+        /// Đường gửi khẩn (hợp đồng đợt 3 S2 §0.4): <b>cùng endpoint, cùng envelope</b> với <see cref="Send"/> /
+        /// <see cref="SendBatch"/> — một dòng gửi endpoint đơn (thân là wrapper), nhiều dòng gửi endpoint batch (thân là
+        /// mảng wrapper đã chuỗi hoá). Khác: timeout ngắn, không ghi log, không gửi bản sao testing, không đọc cấu hình
+        /// (caller đã chụp cờ tắt gửi). Chạy được ngoài main thread.
+        /// </summary>
+        /// <returns>true nếu server nhận hết.</returns>
+        public static async Task<bool> TrySendQuiet(IReadOnlyList<DataWrapper> wrappers, TimeSpan timeout)
+        {
+            if (wrappers == null || wrappers.Count == 0) return true;
+            try
+            {
+                if (wrappers.Count == 1)
+                {
+                    var request = new PostRequest(SINGLE_URL) { Timeout = timeout };
+                    var body = await (await request.SetJsonBody(wrappers[0]).Execute()).SuccessStrBody();
+                    return string.Equals(body?.TrimEnd(), "Request processed successfully.", StringComparison.Ordinal);
+                }
+
+                var batch = new PostRequest(BATCH_URL) { Timeout = timeout };
+                var response = await (await batch.SetJsonBody(wrappers.Select(wrapper => wrapper.ToJson())).Execute())
+                    .SuccessObj<BatchProcessResponse>();
+                return response != null && (response.errors == null || response.errors.Count == 0);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         public async Task SendBatch(ICollection<DataWrapper> wrappers)
         {
             if(!wrappers.Any() || _configService.ShouldNotSendLogToServer) return;

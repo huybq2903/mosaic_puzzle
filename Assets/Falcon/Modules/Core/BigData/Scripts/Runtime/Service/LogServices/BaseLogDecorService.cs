@@ -17,6 +17,7 @@ namespace Falcon.Modules.Core.BigData
         private readonly FCentralUserParamService _centralUserParamService;
         private readonly ITimeRepository _timeRepository;
         private readonly IDataPool _dataPool;
+        private readonly PerfPackRepository _perfPackRepository;
         
         private readonly ConcurrentDictionary<string, BasicPoolData<int>> _createId = new();
         private readonly ConcurrentDictionary<string, BasicPoolData<int>> _sendId = new();
@@ -24,9 +25,11 @@ namespace Falcon.Modules.Core.BigData
         public BaseLogDecorService(
             FCentralUserParamService centralUserParamService,
             ITimeRepository timeRepository,
-            IDataPool dataPool
+            IDataPool dataPool,
+            PerfPackRepository perfPackRepository
         )
         {
+            _perfPackRepository = perfPackRepository;
             _dataPool = dataPool;
             _centralUserParamService = centralUserParamService;
             _timeRepository = timeRepository;
@@ -45,9 +48,34 @@ namespace Falcon.Modules.Core.BigData
 
         public void Decor(AFalconLog log)
         {
-            log.logTypeCreateId = GetCreateId(log);
             log.createdDateLocal = MyTime.DateToString(_timeRepository.LocalNow());
+            if (log.preview)
+            {
+                // Bản chụp khẩn: không đốt số thứ tự (dòng khẩn không mang số — EmergencyRows.Stamp), không đặt lại bộ
+                // đếm "kể từ bản tin trước" của gói hiệu năng (chỉ fps / khung chậm nhất của lúc dựng).
+                log.decorFields = new Dictionary<string, object>();
+                if (log is IPerfPackCarrier) _perfPackRepository.PeekPack(log.decorFields);
+                else if (log is IPerfScreenCarrier) _perfPackRepository.PutScreen(log.decorFields);
+                return;
+            }
+
+            log.logTypeCreateId = GetCreateId(log);
             log.logTypeSendId = GetSendId(log);
+
+            // Gói hiệu năng (hợp đồng đợt 3 B1): chụp ĐÚNG MỘT LẦN mỗi log, ở đây — không ở InjectDictionary (có thể bị gọi
+            // nhiều lần, mỗi lần lại đặt bộ đếm "kể từ bản tin trước"). Chỉ log đã đánh dấu, không bao giờ lên bản tin tổng
+            // hợp. Đọc giá trị đã giữ sẵn, không gọi API Unity.
+            if (log.decorFields != null || log.IsSpanRecord) return;
+            if (log is IPerfPackCarrier)
+            {
+                log.decorFields = new Dictionary<string, object>();
+                _perfPackRepository.PutPack(log.decorFields);
+            }
+            else if (log is IPerfScreenCarrier)
+            {
+                log.decorFields = new Dictionary<string, object>();
+                _perfPackRepository.PutScreen(log.decorFields);
+            }
         }
 
         /// <summary>
@@ -62,6 +90,10 @@ namespace Falcon.Modules.Core.BigData
                 if (spanRecord && kMomentOnlyKeys.Contains(key)) continue;
                 dictionary.PutIfAbsent(key, value);
             }
+
+            if (log is AFalconLog { decorFields: { } fields })
+                foreach (var (key, value) in fields)
+                    dictionary.PutIfAbsent(key, value);
 
             return dictionary;
         }

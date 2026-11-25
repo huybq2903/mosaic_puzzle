@@ -42,11 +42,13 @@ namespace Falcon.Shared.RewardFlow
         
         private FObjectPool<UIRewardItem> _poolItem;
         private FConfigRuntimeSO _config;
-        
+        private float _bgAlpha;
+
         private void Awake()
         {
             _poolItem = new FObjectPool<UIRewardItem>(item, viewport);
             _config = Resources.Load<FConfigRuntimeSO>("ConfigRuntimeEntryList");
+            _bgAlpha = imgBackground.color.a;
         }
 
         public override void Init()
@@ -96,11 +98,15 @@ namespace Falcon.Shared.RewardFlow
             int start = pageIndex * itemsPerPage;
             int end = Mathf.Min(start + itemsPerPage, Data.rewards.Length);
 
+            // Lúc title và desc tween xong; trang sau của cùng entry thì không phải chờ
+            var introEnd = Time.time;
+
             //Tween In
             if (!_isRunTweenIn)
             {
+                introEnd = Time.time + Mathf.Max(durationTweenScaleTitle, durationTweenScaleDescription);
                 // SetLink: đổi scene giữa chừng thì entry chết, DOTween tự kill thay vì tween lên object đã destroy
-                imgBackground.DOFade(0.99f, durationTweenFadeBackground).SetEase(Ease.InOutSine).From(0).SetLink(gameObject);
+                imgBackground.DOFade(_bgAlpha, durationTweenFadeBackground).SetEase(Ease.InOutSine).From(0).SetLink(gameObject);
                 rectTMPTitle.transform.DOScale(1, durationTweenScaleTitle).SetEase(Ease.OutBack).From(0).SetLink(gameObject);
                 rectTMPDescription.transform.DOScale(1, durationTweenScaleDescription).SetEase(Ease.OutBack).From(0).SetLink(gameObject);
                 rectTMPAction.transform.DOScale(1, durationTweenScaleContinue).SetEase(Ease.InOutSine).From(0).SetDelay(durationTweenScaleDescription).SetLink(gameObject);
@@ -114,20 +120,31 @@ namespace Falcon.Shared.RewardFlow
             SetPointsActiveRange(itemsThisPage);
             yield return new WaitForEndOfFrame();
 
+            // Sinh sẵn toàn bộ icon của trang ở scale 0, chưa tween
+            var spawned = new List<UIRewardItem>();
             for (int i = start; i < end; i++)
             {
                 var cloneItem = _poolItem.Get();
+                cloneItem.transform.localScale = Vector3.zero;
                 cloneItem.SetItemData(Data.rewards[i].id, (int)Data.rewards[i].value);
-                cloneItem.gameObject.SetActive(true);
                 cloneItem.name = $"{item.name}_{i}";
-                cloneItem.transform.DOScale(1, durationTweenScaleItem).From(0).SetEase(Ease.OutBack).SetLink(gameObject);
-                
+
                 int pointIndex = (i - start) % points.Count;
                 if (pointIndex < points.Count)
                 {
                     cloneItem.transform.position = points[pointIndex].position;
                 }
 
+                cloneItem.gameObject.SetActive(true);
+                spawned.Add(cloneItem);
+            }
+
+            var remainIntro = introEnd - Time.time;
+            if (remainIntro > 0f) yield return new WaitForSeconds(remainIntro);
+
+            foreach (var cloneItem in spawned)
+            {
+                cloneItem.transform.DOScale(1, durationTweenScaleItem).SetEase(Ease.OutBack).SetLink(gameObject);
                 yield return wait;
             }
 

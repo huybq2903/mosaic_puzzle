@@ -16,7 +16,7 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         {
             "fsn_ad_close_ic.png",
             "fsn_collapsible_countdown_ic.png",
-            "fsn_ad_close_ic_fake.png",
+            "fsn_ad_cta.png",
             "fsn_collapsible_close_ic1.png"
         };
 
@@ -44,7 +44,7 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
 #if UNITY_2019_3_OR_NEWER
             string mainTargetGuid = pbxProject.GetUnityMainTargetGuid();
 #else
-            string mainTargetGuid = pbxProject.TargetGuidByName("Unity-iPhone");
+        string mainTargetGuid = pbxProject.TargetGuidByName("Unity-iPhone");
 #endif
 
             foreach (string imageName in ImageNames)

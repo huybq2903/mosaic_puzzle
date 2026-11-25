@@ -1,5 +1,17 @@
 # Hướng dẫn tích hợp log ad cho module Mediation — BigData ≥ 1.4.0
 
+> **⏸ HOÃN CÓ CHỦ ĐÍCH — ghi 19/10, đừng phát hiện lại.** Rà code thấy hai điểm về `ad_format`, owner chốt
+> **chưa làm** (chưa thấy vấn đề thật, đội Mediation đang việc khác):
+> 1. Nhánh `default` của switch map format ở IronSource **đoán** — mọi chuỗi ngoài `banner`/`interstitial`/
+>    `rewarded_video` thành **`AppOpen`**, tức rác rơi vào một format THẬT có doanh thu thật, không rơi vào rổ
+>    "không biết". Có **hai bản sao** của switch đó (`FalconIronSourceService`, `MultiCallIronSourceProviderParent`).
+> 2. `adFormatRaw` — field tồn tại đúng để bắt lệch kiểu trên — **chỉ được điền** trên đường **Max** và **Admob
+>    bridge**. Đường IronSource không điền, nên đúng chỗ dễ sai nhất lại là chỗ không đo được từ dữ liệu.
+>
+> Lúc nào làm thì ba việc: nhánh default **thôi đoán** (để trống + warning), **mọi provider điền `adFormatRaw`**,
+> và gộp hai bản sao switch lại một chỗ. Enum nội bộ `AdmobAdFormat` cũng vậy: thêm giá trị thứ 5 mà không sửa
+> map là lặng lẽ đổ vào `AppOpen`.
+
 > **Đọc kèm `Request-Mediation-AdEventV2.md`** (việc đang chờ làm). File này là hướng dẫn NỀN cho
 > cả vòng đời ad; hai chỗ đã đổi từ 23/09 và đã sửa trong file này:
 > - Telemetry load giờ đi MỘT event gộp `f_sdk_ad_load_stats` (mảng `units[]`), thay
@@ -181,6 +193,23 @@ void OnInterstitialHiddenEvent(string adUnitId, MaxSdkBase.AdInfo adInfo)
 | `CreativeIdentifier` / `DspName` | `extraMeta["creative_id"]` / `extraMeta["dsp"]` | chưa có cột riêng — đổ vào `event_extra_props`, key snake_case như bên kho. RỖNG thì ĐỪNG thêm key (§H4): `if (!string.IsNullOrEmpty(adInfo.CreativeIdentifier)) extras["creative_id"] = ...` — creative_id chỉ vài network hỗ trợ (cần bật Ad Review), dsp chỉ có nghĩa với AppLovin Exchange |
 | `LatencyMillis` | ❌ | chỉ dùng cho `AdLoadResultParam.loadingMs` — impression đã có `fillLatencyMs` SDK tự đo |
 | `Placement` (MAX) | `adWhere` CÓ ĐIỀU KIỆN | chỉ khi game thật sự truyền placement gameplay vào MAX API; không thì để trống, SDK lấy từ `OnShown` |
+
+### Những thứ hay bị gọi là "ad format" nhưng KHÔNG phải (ghi 19/10)
+
+Để khỏi ai đi tìm chỗ nhét chúng vào `type`: enum `AdType` chỉ tả **đơn vị quảng cáo** (một unit,
+một vòng đời). Mấy thứ dưới đây nằm chiều khác.
+
+| Thứ | Thực ra là gì | Vào log bằng đường nào |
+|---|---|---|
+| **Playable** | Một **loại creative** (quảng cáo chơi thử được) chạy **TRONG** inter hoặc rewarded — cùng unit, cùng vòng đời | Không có cột, và **client không nhìn thấy** loại creative. Cái có thật là `CreativeIdentifier` của MAX → `extraMeta["creative_id"]` (blob) → join sang catalog creative của network. ⚠ Chỉ đường MAX điền |
+| **Video / static / endcard** | Cũng là **creative**, cùng lý do trên | Như trên |
+| **`adBreak()`** | **API của Google cho game web/H5**, nó tự chọn hiện inter hay rewarded | **Không có gì để log** — SDK mobile không có khái niệm này. Bản H5 (nếu có) là SDK khác, và lúc đó nó map về inter **hoặc** rewarded, không thành format thứ tám |
+| **Adaptive banner, interscroller** | **Biến thể kích thước** của banner | `AdType.Banner` (hoặc `MREC` nếu đúng khối 300×250) |
+| **Native banner** | Chính là `AdType.Native` | — |
+| **Splash ad** | Chính là `AdType.AppOpen` | — |
+
+⚠ Đừng lẫn `extraMeta["creative_id"]` (creative của **quảng cáo user đang xem**) với cột `creative`
+trong spec — cột đó là của **Adjust attribution**: creative nào **kéo user này vào game**.
 
 ```csharp
 // waterfallPosition — mẫu chuẩn:

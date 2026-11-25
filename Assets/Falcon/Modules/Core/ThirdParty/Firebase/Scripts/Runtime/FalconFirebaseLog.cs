@@ -50,7 +50,7 @@ namespace Falcon.Modules.Core.ThirdParty.Firebase.Scripts.Runtime
         }
 
         public static void LogFsn(string adFormat, string adSource, string adUnitId, long valueMicros,
-            string currencyCode)
+            string currencyCode, string placement = null)
         {
 #if !UNITY_EDITOR && FIREBASE_ENABLE
             double revenue = valueMicros / 1_000_000.0;
@@ -60,6 +60,7 @@ namespace Falcon.Modules.Core.ThirdParty.Firebase.Scripts.Runtime
                 new Parameter("ad_source", adSource ?? ""),
                 new Parameter("ad_unit_id", adUnitId ?? ""),
                 new Parameter("ad_format", adFormat),
+                new Parameter("ad_placement", placement ?? ""),
                 new Parameter("currency", currencyCode ?? ""),
                 new Parameter("value", revenue)
             };
@@ -114,6 +115,18 @@ namespace Falcon.Modules.Core.ThirdParty.Firebase.Scripts.Runtime
 #if !UNITY_EDITOR && FIREBASE_ENABLE
             if (FirebaseInit.isInitialize)
                 FirebaseAnalytics.LogEvent(name, parameters, value);
+#endif
+        }
+
+        /// <summary>
+        /// Event tự do kèm ĐÚNG MỘT parameter số thực (Firebase lưu dạng double). Tách khỏi overload
+        /// nhận <c>long</c> vì con số tiền tệ ở đây thường nhỏ hơn 1 cent — ép sang long là mất trắng.
+        /// </summary>
+        public static void LogNumber(string name, string parameterName, double value)
+        {
+#if !UNITY_EDITOR && FIREBASE_ENABLE
+            if (FirebaseInit.isInitialize)
+                FirebaseAnalytics.LogEvent(name, parameterName, value);
 #endif
         }
 

@@ -22,6 +22,13 @@ namespace Falcon.Modules.Core.BigData
         public string uuid = Guid.NewGuid().ToString();
         public string createdDateLocal;
 
+        /// <summary>
+        /// Field chụp MỘT lần lúc decor (gói hiệu năng B1…) rồi chỉ chép vào payload — để <c>ToDictionary</c> gọi bao nhiêu
+        /// lần cũng không đặt lại bộ đếm "kể từ bản tin trước" lần nữa.
+        /// </summary>
+        [Newtonsoft.Json.JsonIgnore]
+        internal System.Collections.Generic.Dictionary<string, object> decorFields;
+
         protected AFalconLog()
         {
             // Ctor thuần data — ids/date do BaseLogDecorService gán trong pipeline decor lúc Send

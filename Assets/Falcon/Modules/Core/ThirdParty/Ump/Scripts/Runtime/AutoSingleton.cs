@@ -41,16 +41,6 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
                     _instance = childObj.GetComponent<T>();
                     if (_instance == null)
                         _instance = childObj.AddComponent<T>();
-
-                    if (!Application.isPlaying)
-                    {
-                        // Ngoài play mode, object tạm này không được phép lọt vào scene đang mở.
-                        root.hideFlags = HideFlags.HideAndDontSave;
-                        childObj.hideFlags = HideFlags.HideAndDontSave;
-                        Debug.LogWarning(
-                            $"[AutoSingleton] {typeof(T).Name}.Instance bị truy cập ngoài play mode. " +
-                            "Object được tạo dạng HideAndDontSave nên không lưu vào scene.");
-                    }
                 }
 
                 return _instance;
@@ -77,8 +67,8 @@ namespace Falcon.Modules.Core.ThirdParty.Ump.Runtime
                 root = new GameObject(_ROOT_OBJECT_NAME);
             }
 
-            if (Application.isPlaying)
-                DontDestroyOnLoad(root);
+            DontDestroyOnLoad(root);
+
 
             return root;
         }

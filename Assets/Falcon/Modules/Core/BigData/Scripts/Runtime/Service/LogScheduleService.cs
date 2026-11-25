@@ -87,6 +87,7 @@ namespace Falcon.Modules.Core.BigData
             _decorService.Decor(log);
             var dataWrapper = new DataWrapper(log, _appInfoRepository.PackageName, _appInfoRepository.Platform);
             Enqueue(dataWrapper);
+            FBigDataHooks.RaiseLogEnqueued(log);
         }
 
         /// <summary>
@@ -113,6 +114,7 @@ namespace Falcon.Modules.Core.BigData
             foreach (var log in logs) _decorService.Decor(log);
             EnqueueAll(logs.Select(log =>
                 new DataWrapper(log, _appInfoRepository.PackageName, _appInfoRepository.Platform)));
+            foreach (var log in logs) FBigDataHooks.RaiseLogEnqueued(log);
         }
 
         /// <summary>
@@ -125,6 +127,7 @@ namespace Falcon.Modules.Core.BigData
             if (!IsSendable(log)) return;
             _decorService.Decor(log);
             var dataWrapper = new DataWrapper(log, _appInfoRepository.PackageName, _appInfoRepository.Platform);
+            FBigDataHooks.RaiseLogEnqueued(log);
             Task.Run(() =>
             {
                 _sendService.Send(dataWrapper).ContinueWith(t =>

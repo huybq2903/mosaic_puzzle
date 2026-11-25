@@ -59,6 +59,49 @@ namespace Falcon.Modules.Core.BigData
         public const string Gift = "gift";
 
         /// <summary>
+        ///     PHÍ lập một thực thể của tính năng (lập bang hội…) — vế TIÊU. Bản tin tiêu đó phải
+        ///     mang luôn <c>feature</c> + <c>featureInstanceId</c> bằng <c>Feature.Stamp</c>, và số
+        ///     dư trước khi trả phí chính là <c>valueBefore</c> của nó, game không gửi thêm field.
+        ///     <br/>Ký trong hợp đồng tính năng (bản Team §2.3).
+        /// </summary>
+        public const string CreateFee = "create_fee";
+
+        /// <summary>
+        ///     Tài nguyên NHẬN ĐƯỢC vì người khác giúp/tặng (tim, thẻ) — vế NHẬN, cặp với bước
+        ///     <see cref="FFeatureStep.Group.HelpGive"/> của người tặng. Dòng này cũng mang
+        ///     <c>feature</c> + <c>featureInstanceId</c> qua <c>Feature.Stamp</c>; <b>không</b> cần
+        ///     <c>request_id</c> (án owner 30/10 — nối lượt xin ↔ lượt tặng làm ở bảng bước).
+        ///     <br/>Ký trong hợp đồng tính năng (bản Team §2.8).
+        /// </summary>
+        public const string HelpReceived = "help_received";
+
+        #region Phía TIÊU — ký với loader 09/11
+
+        /// <summary>
+        ///     PHÍ VÀO CHƠI / mở lượt — tim, năng lượng, vé, lượt.
+        ///     <br/>⚠ Là phí VÀO, nên trên cùng một lượt nó đứng <b>cạnh</b>
+        ///     <see cref="LevelReward"/> (phía nhận), không loại trừ nhau.
+        /// </summary>
+        public const string PlayCost = "play_cost";
+
+        /// <summary>
+        ///     DÙNG vật phẩm trợ giúp trong ván.
+        ///     <br/>⚠ Lượt dùng booster còn nằm ở dòng level (<c>preBoostersUsed</c> /
+        ///     <c>boostersUsed</c>). <b>Đừng cộng hai nơi</b> để ra "số lần dùng booster".
+        ///     (<c>f_sdk_level_action</c> của 1.7.0 từng có <c>action = "booster"</c>; đã ngừng, không có
+        ///     event booster thay thế.)
+        /// </summary>
+        public const string BoosterUse = "booster_use";
+
+        /// <summary>NÂNG CẤP / chế tạo / xây.</summary>
+        public const string Upgrade = "upgrade";
+
+        /// <summary>HỒI SINH / mua thêm lượt, thêm giờ để chơi tiếp.</summary>
+        public const string Revive = "revive";
+
+        #endregion
+
+        /// <summary>
         /// Tiền tố cho liveops per-game: <c>FResourceWhen.EventPrefix + "halloween_2026"</c>.
         /// Cùng khuôn <see cref="FFunnelName.EventPrefix"/> — phần sau tiền tố là vocab MỞ của
         /// từng game nên không khai hằng số được.

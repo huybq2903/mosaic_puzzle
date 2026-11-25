@@ -87,7 +87,9 @@ public sealed class FsnRewardedNativeFlow
     {
         if (_finished) return;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FSN][RewardFlow] Reward received");
+#endif
 
         _rewardReceived = true;
     }
@@ -96,7 +98,9 @@ public sealed class FsnRewardedNativeFlow
     {
         if (_finished) return;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FSN][RewardFlow] Rewarded display failed");
+#endif
 
         FinishFailed();
     }
@@ -105,7 +109,9 @@ public sealed class FsnRewardedNativeFlow
     {
         if (_finished) return;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log($"[FSN][RewardFlow] Rewarded hidden. rewardReceived = {_rewardReceived}");
+#endif
 
         // if (!_rewardReceived)
         // {
@@ -123,7 +129,9 @@ public sealed class FsnRewardedNativeFlow
 
         _nativeStarted = true;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FSN][RewardFlow] Show native after rewarded");
+#endif
 
         try
         {
@@ -140,7 +148,9 @@ public sealed class FsnRewardedNativeFlow
     {
         if (_finished) return;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FSN][RewardFlow] Native done");
+#endif
 
         // FinishSuccess();
         if (_rewardReceived)
@@ -162,21 +172,13 @@ public sealed class FsnRewardedNativeFlow
         if (_finished) return;
         _finished = true;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FSN][RewardFlow] Flow finished with SUCCESS");
+#endif
 
-        // SỬA TẠI ĐÂY: Thay vì ẩn ngay lập tức, hãy dùng luồng phụ hoãn lại 1 frame hoặc 0.1 giây 
+        // SỬA TẠI ĐÂY: Thay vì ẩn ngay lập tức, hãy dùng luồng phụ hoãn lại 1 frame hoặc 0.1 giây
         // để Android dọn dẹp xong giao diện Ads cũ, tránh bị hẫng đồ họa
-        FsnAdManager.Instance.StartCoroutine(DelayHideOverlay(() =>
-        {
-            try
-            {
-                _onSuccess?.Invoke();
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-            }
-        }));
+        RunAfterHideOverlay(_onSuccess);
     }
 
     private void FinishFailed()
@@ -184,20 +186,54 @@ public sealed class FsnRewardedNativeFlow
         if (_finished) return;
         _finished = true;
 
+#if ENABLE_DEBUG_LOG
         Debug.Log("[FSN][RewardFlow] Flow finished with FAILED");
+#endif
 
         // SỬA TẠI ĐÂY: Tương tự cho luồng thất bại
-        FsnAdManager.Instance.StartCoroutine(DelayHideOverlay(() =>
+        RunAfterHideOverlay(_onFailed);
+    }
+
+    /// <summary>
+    /// Hoãn một frame rồi ẩn overlay + trả callback cho game. Không chạy được coroutine (runner bị tắt /
+    /// đang huỷ) thì làm NGAY — đây là đường duy nhất trả điều khiển về game, mất nó là kẹt màn đen.
+    /// </summary>
+    private void RunAfterHideOverlay(Action callback)
+    {
+        void InvokeCallback()
         {
             try
             {
-                _onFailed?.Invoke();
+                callback?.Invoke();
             }
             catch (Exception e)
             {
                 Debug.LogException(e);
             }
-        }));
+        }
+
+        try
+        {
+            FsnAdManager.Instance.StartCoroutine(DelayHideOverlay(InvokeCallback));
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+            HideOverlaySafely();
+            InvokeCallback();
+        }
+    }
+
+    private static void HideOverlaySafely()
+    {
+        try
+        {
+            FsnAdOverlay.Instance.Hide();
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+        }
     }
 
     // THÊM HÀM BỔ TRỢ NÀY VÀO TRONG CLASS FsnRewardedNativeFlow
@@ -209,8 +245,8 @@ public sealed class FsnRewardedNativeFlow
         // Hoặc nếu máy cấu hình yếu vẫn bị khựng, bạn có thể chờ một khoảng thời gian ngắn:
         // yield return new WaitForSeconds(0.1f);
 
-        // Tiến hành ẩn màn đen một cách an toàn
-        FsnAdOverlay.Instance.Hide();
+        // Tiến hành ẩn màn đen một cách an toàn — Hide lỗi thì callback của game VẪN phải chạy.
+        HideOverlaySafely();
 
         // Thực thi callback trả code về cho logic Game chạy tiếp
         callbackOnDone?.Invoke();

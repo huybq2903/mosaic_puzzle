@@ -31,6 +31,15 @@ namespace Falcon.Modules.Core.BigData
         /// <summary>Số lần hệ điều hành cảnh báo thiếu bộ nhớ (onTrimMemory / didReceiveMemoryWarning).</summary>
         [FKey(RemoveIfNull = true)] public int? memoryWarningCount;
 
+        /// <summary>
+        /// Hợp đồng đợt 3 B5 §5.3: phiên này đã ngừng làm mới tham số APS giữa lượt vì một lần gọi quá 16 ms. Vắng nếu
+        /// không ngừng hoặc game không dùng APS.
+        /// </summary>
+        [FKey(RemoveIfNull = true)] public bool? apsRefreshDisabled;
+
+        /// <summary>Lần gọi APS lâu nhất trong phiên (ms). Vắng nếu không có lần làm mới nào.</summary>
+        [FKey(RemoveIfNull = true)] public int? apsRefreshMaxMs;
+
         [Preserve]
         public FSessionLog()
         {

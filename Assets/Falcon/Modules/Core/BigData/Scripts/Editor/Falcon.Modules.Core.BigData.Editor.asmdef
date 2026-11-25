@@ -1,0 +1,16 @@
+{
+    "name": "Falcon.Modules.Core.BigData.Editor",
+    "rootNamespace": "Falcon.Modules.Core.BigData.Editor",
+    "references": [],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

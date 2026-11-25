@@ -6,8 +6,7 @@
         "Falcon.Shared.Common",
         "Falcon.Helpers.FReflection.Runtime",
         "Unity.InputSystem",
-        "StandaloneFileBrowser",
-        "Imui"
+        "StandaloneFileBrowser"
     ],
     "includePlatforms": [
         "Editor",

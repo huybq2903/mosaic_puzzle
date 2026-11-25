@@ -29,5 +29,6 @@ namespace Falcon.Modules.Core.ThirdParty.Mmp.Runtime
         public string afAD;
         public bool isRetargeting;
         public string adgroup;
+        public string installTime;
     }
 }

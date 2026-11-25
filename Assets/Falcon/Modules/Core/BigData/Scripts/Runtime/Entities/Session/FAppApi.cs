@@ -28,6 +28,16 @@ namespace Falcon.Modules.Core.BigData
         }
 
         /// <summary>
+        /// Mức đồ hoạ người chơi đang chọn (<c>low</c> / <c>medium</c> / <c>high</c>… — game đặt) — đi trên <c>app_open</c>
+        /// (hợp đồng đợt 3 B1(c)). Gọi lúc khởi động và mỗi khi người chơi đổi; SDK lưu qua restart nên lần mở Cold mang
+        /// giá trị lần khai trước. Game không có chỉnh đồ hoạ thì không gọi (field vắng). Null để gỡ.
+        /// </summary>
+        public void SetGraphicsQuality(string quality)
+        {
+            _appOpenLogService.SetGraphicsQuality(quality);
+        }
+
+        /// <summary>
         /// Module push/deeplink báo lần mở app này đến từ đâu (§B4) — thiếu nó thì không khâu được
         /// push → open → phiên. Unity không đọc được intent (Android) / launchOptions (iOS) nên
         /// SDK-core không tự biết; không ai báo thì field vắng mặt chứ SDK không mặc định `icon`.

@@ -35,9 +35,9 @@ namespace Falcon.Modules.Core.BigData
     }
 
     /// <summary>
-    /// Van chống nhãn bậy, đặt ở client cho khớp van mà loader enforce phía server (§D11):
-    /// vượt trần thì server DROP + DQ đếm, nên chặn sớm ở đây vừa đỡ băng thông vừa báo được cho
-    /// dev ngay lúc chạy thay vì để họ đi tìm dữ liệu mất tích.
+    /// Van chống nhãn bậy, đặt ở client theo trần của hợp đồng §D11. ⚠ Kho xác nhận 12/11 là phía
+    /// server KHÔNG có van nào cho nhãn — van này là hàng rào duy nhất, chặn ở đây vừa đỡ băng thông
+    /// vừa báo được cho dev ngay lúc chạy.
     /// <br/>KHÔNG còn hàng rào vocab đóng / cardinality như bản trước: hợp đồng đã bỏ
     /// label-registry (2026-08-10) và nới cho nhãn gánh cả "tham số động" — một tham số kiểu số
     /// thì đương nhiên có vô số giá trị, chặn theo cardinality là chặn đúng công dụng mới.

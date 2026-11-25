@@ -5,11 +5,11 @@
  * Date: 2025-10-15
  */
 
+using System;
 using DG.Tweening;
 using Falcon.Helpers.EventBus;
 using UnityEngine;
 using UnityEngine.EventSystems;
-using UnityEngine.InputSystem;
 
 namespace Falcon.Modules.UI.UITooltip.Runtime
 {
@@ -20,6 +20,7 @@ namespace Falcon.Modules.UI.UITooltip.Runtime
         private GameObject _goTrigger;
         private CanvasGroup _canvasGroup;
         private bool _active;
+        private UITooltipDisableNotifier _triggerDisableNotifier;
 
         private void Awake()
         {
@@ -29,15 +30,16 @@ namespace Falcon.Modules.UI.UITooltip.Runtime
         private void OnEnable()
         {
             GameEvent<(string, int)[]>.Register("falcon.modules.ui.tooltip", Open, this);
+            GameEvent<((string, int)[], bool)>.Register("falcon.modules.ui.tooltip", Open, this);
             GameEvent<string>.Register("falcon.modules.ui.tooltip", Open, this);
         }
 
         private void OnDisable()
         {
             GameEvent<(string, int)[]>.Unregister("falcon.modules.ui.tooltip", Open, this);
+            GameEvent<((string, int)[], bool)>.Unregister("falcon.modules.ui.tooltip", Open, this);
             GameEvent<string>.Unregister("falcon.modules.ui.tooltip", Open, this);
-            _goTrigger = null;
-            _active = false;
+            UnregisterTriggerDisableEvent();
         }
 
         private void Open(string content)
@@ -50,7 +52,10 @@ namespace Falcon.Modules.UI.UITooltip.Runtime
             }
         }
 
-        private void Open((string, int)[] data)
+        private void Open((string, int)[] data) => Open((data, true));
+
+        // bool = có chèn dấu "+" giữa các món
+        private void Open(((string, int)[], bool) data)
         {
             if (Open())
             {
@@ -62,34 +67,58 @@ namespace Falcon.Modules.UI.UITooltip.Runtime
 
         private bool Open()
         {
-            // Tween scale nằm ở element, complete ở đây kẻo mở lại trong 0.2s là scale kẹt dở dang.
-            element.transform.DOComplete();
+            this.DOComplete();
 
             var selected = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
             if (_goTrigger == selected)
             {
-                CloseAndForget();
+                Close();
+                _goTrigger = null;
+                UnregisterTriggerDisableEvent();
                 return false;
             }
+
+            UnregisterTriggerDisableEvent();
 
             _goTrigger = selected;
             if (_goTrigger == null)
             {
                 Close();
-                _active = false;
                 return false;
             }
+
+            RegisterTriggerDisableEvent(_goTrigger);
 
             _active = true;
             _canvasGroup.alpha = 1;
             return true;
         }
 
-        private void CloseAndForget()
+        private void RegisterTriggerDisableEvent(GameObject trigger)
+        {
+            if (trigger == null) return;
+
+            _triggerDisableNotifier = trigger.GetComponent<UITooltipDisableNotifier>();
+            if (_triggerDisableNotifier == null)
+                _triggerDisableNotifier = trigger.AddComponent<UITooltipDisableNotifier>();
+
+            _triggerDisableNotifier.Disabled -= OnTriggerDisabled;
+            _triggerDisableNotifier.Disabled += OnTriggerDisabled;
+        }
+
+        private void UnregisterTriggerDisableEvent()
+        {
+            if (_triggerDisableNotifier == null) return;
+            _triggerDisableNotifier.Disabled -= OnTriggerDisabled;
+            _triggerDisableNotifier = null;
+        }
+
+        private void OnTriggerDisabled()
         {
             Close();
             _goTrigger = null;
             _active = false;
+            UnregisterTriggerDisableEvent();
         }
 
         private void Close()
@@ -103,29 +132,40 @@ namespace Falcon.Modules.UI.UITooltip.Runtime
         {
             if (!_active) return;
 
-            // Nút trigger bị tắt (đóng popup, despawn pool) thì tooltip phải biến theo.
-            if (_goTrigger == null || !_goTrigger.activeInHierarchy)
+            if (Input.GetMouseButtonDown(0))
+                Close();
+            else if (Input.GetMouseButtonUp(0))
+                OnEndTouch();
+
+            foreach (var touch in Input.touches)
             {
-                CloseAndForget();
-                return;
+                switch (touch.phase)
+                {
+                    case TouchPhase.Began: Close(); break;
+                    case TouchPhase.Ended: OnEndTouch(); break;
+                }
             }
-
-            var pointer = Pointer.current;
-            if (pointer == null) return;
-
-            if (pointer.press.wasPressedThisFrame) Close();
-            else if (pointer.press.wasReleasedThisFrame) OnEndTouch();
         }
 
         private void OnEndTouch()
         {
             if (_goTrigger != null)
             {
-                _goTrigger = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+                _goTrigger = EventSystem.current.currentSelectedGameObject;
             }
 
             if (_canvasGroup.alpha != 0) return;
             _active = false;
+        }
+    }
+
+    public class UITooltipDisableNotifier : MonoBehaviour
+    {
+        public event Action Disabled;
+
+        private void OnDisable()
+        {
+            Disabled?.Invoke();
         }
     }
 }

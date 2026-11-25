@@ -1,0 +1,620 @@
+-- =====================================================================================================
+-- LuaDynamic — load inter + rewarded theo thuật toán 8 của MultiCall (MultiCallMaxProvider8).
+--
+-- Unity -> Lua : OnInitMaxSuccess() / OnInitAdmobSuccess() / OnNetworkBack()
+--                On{Interstitial|Rewarded}{LoadSuccess|LoadFail|ShowSuccess}(adUnitId, linkedMaxAdUnitId)
+--                IsShowInterstitial(params) / IsShowRewarded(params)
+--                params = { where, level, sinceLastInterSec, interShownCount, ... }
+--                linkedMaxAdUnitId = id MAX mà bản load AdMob bước C gắn vào; nil = bản load thường
+-- Lua -> Unity : context.Max.LoadInterstitial / LoadRewarded(adUnitId, floor, delaySeconds)
+--                context.Admob.LoadInterstitial / LoadRewarded(adUnitId, floor, delaySeconds [, linkedMaxAdUnitId])
+--                context.Max.CancelInterstitial / CancelRewarded(adUnitId) -> true = đã huỷ lịch đang chờ
+--                context.Admob.CancelInterstitial / CancelRewarded(adUnitId [, linkedMaxAdUnitId])
+-- Đọc          : context.listInterstitialAd[listKey] / context.listRewardedAd[listKey]
+--                listKey = adUnitId, hoặc adUnitId .. "@" .. linkedMaxAdUnitId
+--                { status = Idle|Waiting|Loading|Ready|Showing, eCpm, floor, lastError, adUnitIdType, multiplier,
+--                  timeConfig, ... }
+--                context.isOffline = true khi máy không có mạng (Unity đo bằng internetReachability)
+--
+-- Lua không có hẹn giờ: "lịch" = delay của lệnh load. Xin lại một unit đang Waiting = thay lịch cũ.
+-- Trạng thái trong context chỉ cập nhật trước mỗi lần Unity gọi vào Lua; trong cùng một lượt gọi, script tự
+-- nhớ lệnh load / huỷ vừa gửi (localStatus).
+-- Retry theo timeConfig của từng id trong sc_ad_bid_floor (như thuật toán 8); id không có timeConfig dùng CONFIG.
+-- Mất mạng: không gửi request, fail lúc offline không tính, có mạng lại thì OnNetworkBack nạp lại (như thuật toán 8).
+-- Lua không in log và không gắn nhãn debug; mọi log là của Unity ([LuaAd], [AdArbitration]).
+-- =====================================================================================================
+
+local CONFIG = {
+  interstitial = {
+    defaultLoadDelaySeconds = 5,
+    defaultLoadDelayByAdUnit = {},          -- ["adUnitId"] = giây
+    maxConcurrentFloor = 3,
+    failsToDecreaseMultiplier = 5,
+    maxFails = 15,                           -- 0 = không giới hạn
+    maxFailsByAdUnit = {},                  -- ["adUnitId"] = số lần
+    maxCached = 0,                          -- 0 = không giới hạn
+    defaultRetry = { 10 },                  -- retry id default khi id KHÔNG có timeConfig (giây, theo lần fail liên tiếp)
+    floorRetry = { 10, 15, 20, 25, 30 },    -- retry bậc dynamic floor khi id KHÔNG có timeConfig
+  },
+
+  rewarded = {
+    defaultLoadDelaySeconds = 5,
+    defaultLoadDelayByAdUnit = {},
+    maxConcurrentFloor = 3,
+    failsToDecreaseMultiplier = 5,
+    maxFails = 15,
+    maxFailsByAdUnit = {},
+    maxCached = 0,
+    defaultRetry = { 10 },
+    floorRetry = { 10, 15, 20, 25, 30 },
+  },
+}
+
+local MULTIPLIER_STEP = 0.1        -- mỗi lần giảm hệ số
+local RELOAD_AFTER_SHOW = 1        -- giây: nạp lại id default sau khi ad đóng
+local ADMOB_BACKOFF_MAX_POW = 6    -- retry AdMob default: 1, 2, 4, ... 64 giây
+
+-- ======================= TRẠNG THÁI MỖI FORMAT =======================
+-- adFormat = toàn bộ trạng thái của một format (INTER hoặc RW). Mọi hàm bên dưới nhận nó làm tham số đầu.
+--
+-- maxSlot (id MAX): adUnitId, adUnitIdType, isDefault, multiplier (đang dùng), configMultiplier (gốc),
+--   minMultiplier (sàn), retrySchedule (timeConfig của id, rỗng thì CONFIG), attemptCount (lần GỬI liên tiếp
+--   chưa ra ad), failsInBase (đếm fail trong base hiện tại, dùng cho maxFails), stoppedUntilNewBase,
+--   baseGeneration (base của request gần nhất)
+-- admobDefault (id AdMob default): adUnitId, adUnitIdType, attemptCount
+-- admobFloorUnit (id AdMob floor): adUnitId, adUnitIdType, multiplier
+-- linkedLoad (bản load bước C = một id AdMob floor gắn một id MAX): listKey, admobFloorUnit, maxAdUnitId, ownerCascade
+-- cascade (thác giá bước C của một id MAX): number, maxAdUnitId, maxEcpm, currentStep
+local function newFormat(config, isRewarded)
+  return {
+    config = config, isRewarded = isRewarded,
+    listName = isRewarded and "listRewardedAd" or "listInterstitialAd",
+    loadFunctionName = isRewarded and "LoadRewarded" or "LoadInterstitial",
+    -- bước A: id MAX
+    maxStarted = false,
+    maxDefaultSlots = {}, maxFloorSlots = {}, maxAllSlots = {}, maxSlotById = {},
+    baseEcpm = 0, baseGeneration = 0, hasBase = false,
+    -- bước B + C: id AdMob
+    admobStarted = false,
+    admobDefaultById = {},    -- [adUnitId] = admobDefault
+    admobFloorUnits = {},     -- admobFloorUnit, multiplier cao -> thấp (thứ tự thác)
+    cascadeByMaxId = {},      -- [id MAX] = cascade đang chạy
+    cascadeCount = 0,
+    linkedLoadByKey = {},     -- [listKey] = linkedLoad
+  }
+end
+
+local INTER = newFormat(CONFIG.interstitial, false)
+local RW = newFormat(CONFIG.rewarded, true)
+
+-- ======================= ĐỌC CONTEXT / GỌI UNITY =======================
+-- localStatus[listName][listKey]: trạng thái do chính lượt gọi này vừa đổi (load -> Waiting, huỷ -> Idle), vì
+-- context chỉ được Unity chép lại TRƯỚC mỗi lượt gọi. Xoá ở đầu mỗi lượt (beginCall).
+local localStatus = {}
+
+local function beginCall() localStatus = {} end
+
+local function getAdEntry(adFormat, listKey) return context[adFormat.listName][listKey] or {} end
+
+local function getStatus(adFormat, listKey)
+  local overrides = localStatus[adFormat.listName]
+  if overrides and overrides[listKey] then return overrides[listKey] end
+  return getAdEntry(adFormat, listKey).status or "Idle"
+end
+
+local function setLocalStatus(adFormat, listKey, status)
+  localStatus[adFormat.listName] = localStatus[adFormat.listName] or {}
+  localStatus[adFormat.listName][listKey] = status
+end
+
+-- Bản app cũ (<= 1.2.3) không có context.isOffline / OnNetworkBack / Cancel*: giữ cách cũ (nhận offline theo mã lỗi,
+-- thử lại sau LEGACY_OFFLINE_RETRY_SECONDS) để script dùng chung được cho mọi bản.
+local LEGACY_OFFLINE_RETRY_SECONDS = 2
+local LEGACY_OFFLINE_CODES = {
+  NoNetwork = true, NetworkError = true, NetworkTimeout = true,
+  ["-1009"] = true, ["-1000"] = true, ["-1001"] = true,
+}
+
+local function hasNetworkApi() return context.isOffline ~= nil end
+local function isOffline() return context.isOffline == true end
+
+local function isLegacyOfflineError(lastError)
+  local code = string.match(lastError, "^(%S+)")
+  return code ~= nil and LEGACY_OFFLINE_CODES[code] == true
+end
+
+local function isLoadingOrReady(adFormat, listKey)
+  local status = getStatus(adFormat, listKey)
+  return status == "Loading" or status == "Ready"
+end
+
+local function sendLoad(adFormat, mediation, adUnitId, floor, delaySeconds, linkedMaxAdUnitId)
+  local accepted = context[mediation][adFormat.loadFunctionName](adUnitId, floor, delaySeconds, linkedMaxAdUnitId)
+  if accepted then
+    setLocalStatus(adFormat, linkedMaxAdUnitId and (adUnitId .. "@" .. linkedMaxAdUnitId) or adUnitId, "Waiting")
+  end
+  return accepted
+end
+
+local function cancelFunctionOf(adFormat, mediation)
+  return context[mediation][adFormat.isRewarded and "CancelRewarded" or "CancelInterstitial"]
+end
+
+local function sendCancel(adFormat, mediation, adUnitId)
+  local cancelFunction = cancelFunctionOf(adFormat, mediation)
+  if cancelFunction == nil then return false end
+  local cancelled = cancelFunction(adUnitId)
+  if cancelled then setLocalStatus(adFormat, adUnitId, "Idle") end
+  return cancelled
+end
+
+-- "2,5,10" -> { 2, 5, 10 }; rỗng / không có số nào -> {}
+local function parseTimeConfig(timeConfig)
+  local schedule = {}
+  if type(timeConfig) ~= "string" then return schedule end
+  for part in string.gmatch(timeConfig, "[^,]+") do
+    local seconds = tonumber(part)
+    if seconds then table.insert(schedule, seconds) end
+  end
+  return schedule
+end
+
+local function contains(list, item)
+  for _, value in ipairs(list) do if value == item then return true end end
+  return false
+end
+
+-- id của mediation ("Max" / "Admob", bản load thường, có adUnitIdType). adUnitIdType chứa "default" -> id default,
+-- còn lại -> dynamic floor. Xếp theo tên adUnitIdType, số ở cuối so như số: default_2 < default_10, h1 < h2.
+local function collectAdUnits(adFormat, mediation)
+  local defaultUnits, floorUnits = {}, {}
+  for listKey, entry in pairs(context[adFormat.listName]) do
+    if entry.mediation == mediation and entry.linkedAdUnitId == nil and type(entry.adUnitIdType) == "string"
+        and entry.adUnitId == listKey then
+      local adUnitIdType = entry.adUnitIdType
+      local isDefault = string.find(string.lower(adUnitIdType), "default", 1, true) ~= nil
+      local serverMultiplier = entry.multiplier or 0
+      table.insert(isDefault and defaultUnits or floorUnits, {
+        adUnitId = listKey, adUnitIdType = adUnitIdType, isDefault = isDefault,
+        multiplier = isDefault and 0 or (serverMultiplier > 0 and serverMultiplier or 1),
+        typePrefix = string.lower((string.gsub(adUnitIdType, "%d+$", ""))),
+        typeNumber = tonumber(string.match(adUnitIdType, "(%d+)$")) or 0,
+        serverRetry = parseTimeConfig(entry.timeConfig),
+      })
+    end
+  end
+  local function byTypeName(left, right)
+    if left.typePrefix ~= right.typePrefix then return left.typePrefix < right.typePrefix end
+    if left.typeNumber ~= right.typeNumber then return left.typeNumber < right.typeNumber end
+    if left.adUnitIdType ~= right.adUnitIdType then return left.adUnitIdType < right.adUnitIdType end
+    return left.adUnitId < right.adUnitId
+  end
+  table.sort(defaultUnits, byTypeName)
+  table.sort(floorUnits, byTypeName)
+  return defaultUnits, floorUnits
+end
+
+-- ======================= BƯỚC A: MAX (thuật toán 8) =======================
+local function hasAd(adFormat, maxSlot) return getStatus(adFormat, maxSlot.adUnitId) == "Ready" end
+
+-- legacyCancelled: bản app cũ không huỷ được lịch -> chỉ thôi tính lịch đó là đang giữ chỗ (cách cũ)
+local function hasPendingRetry(adFormat, maxSlot)
+  return getStatus(adFormat, maxSlot.adUnitId) == "Waiting" and not maxSlot.legacyCancelled
+end
+
+-- huỷ lịch đang chờ của maxSlot (như xoá token retry của thuật toán 8). Lịch đó chưa gửi -> trả lại lần thử đã đếm.
+local function cancelPendingLoad(adFormat, maxSlot)
+  if not hasPendingRetry(adFormat, maxSlot) then return false end
+  if cancelFunctionOf(adFormat, "Max") == nil then
+    maxSlot.legacyCancelled = true
+    return true
+  end
+  if not sendCancel(adFormat, "Max", maxSlot.adUnitId) then return false end
+  maxSlot.attemptCount = math.max(0, maxSlot.attemptCount - 1)
+  return true
+end
+
+local function isBusy(adFormat, maxSlot)
+  return getStatus(adFormat, maxSlot.adUnitId) == "Loading" or hasPendingRetry(adFormat, maxSlot)
+end
+
+local function maxConcurrentFloors(adFormat) return math.max(1, adFormat.config.maxConcurrentFloor) end
+
+local function maxFailsOf(adFormat, maxSlot)
+  return adFormat.config.maxFailsByAdUnit[maxSlot.adUnitId] or adFormat.config.maxFails
+end
+
+local function isCacheFull(adFormat)
+  if adFormat.config.maxCached <= 0 then return false end
+  local cachedCount = 0
+  for _, maxSlot in ipairs(adFormat.maxAllSlots) do
+    if hasAd(adFormat, maxSlot) then cachedCount = cachedCount + 1 end
+  end
+  return cachedCount >= adFormat.config.maxCached
+end
+
+local function countBusyFloors(adFormat, excludedSlot)
+  local busyCount = 0
+  for _, maxSlot in ipairs(adFormat.maxFloorSlots) do
+    if maxSlot ~= excludedSlot and isBusy(adFormat, maxSlot) then busyCount = busyCount + 1 end
+  end
+  return busyCount
+end
+
+-- maxConcurrentFloor bậc TRỐNG THẤP NHẤT (chưa có ad). Gặp bậc đã dừng (fail đủ maxFails) thì DỪNG LUÔN, không lấy
+-- bậc cao hơn: giá thấp còn không có ad thì giá cao hơn càng không có. Base mới (id default load lại) mới chạy tiếp.
+local function lowestFreeFloors(adFormat)
+  local result = {}
+  for _, maxSlot in ipairs(adFormat.maxFloorSlots) do
+    if #result >= maxConcurrentFloors(adFormat) then break end
+    if not hasAd(adFormat, maxSlot) then
+      if maxSlot.stoppedUntilNewBase then break end
+      table.insert(result, maxSlot)
+    end
+  end
+  return result
+end
+
+local function retryDelayOf(maxSlot)
+  local schedule = maxSlot.retrySchedule
+  if #schedule == 0 then return 0 end
+  return schedule[math.max(1, math.min(maxSlot.attemptCount, #schedule))]
+end
+
+local function defaultStartDelay(adFormat, maxSlot, defaultIndex)
+  local customDelay = adFormat.config.defaultLoadDelayByAdUnit[maxSlot.adUnitId]
+  if customDelay then return math.max(0, customDelay) end
+  return defaultIndex * math.max(0, adFormat.config.defaultLoadDelaySeconds)
+end
+
+-- xin Unity load maxSlot sau delaySeconds. Offline / kho đầy thì chặn mọi id. Id default qua cổng; bậc floor chỉ qua
+-- khi đã có base, chưa dừng, thuộc nhóm bậc trống thấp nhất và còn chỗ. true = Unity đã nhận.
+-- attemptCount đếm lần GỬI (như countLoadAttempt): xin lại một lịch đang chờ = thay lịch, không đếm thêm.
+local function requestMaxLoad(adFormat, maxSlot, delaySeconds)
+  if isOffline() or isLoadingOrReady(adFormat, maxSlot.adUnitId) or isCacheFull(adFormat) then return false end
+  if not maxSlot.isDefault then
+    local gateOpen = adFormat.hasBase and not maxSlot.stoppedUntilNewBase
+        and contains(lowestFreeFloors(adFormat), maxSlot)
+        and countBusyFloors(adFormat, maxSlot) < maxConcurrentFloors(adFormat)
+    if not gateOpen then return false end
+  end
+  local replacing = getStatus(adFormat, maxSlot.adUnitId) == "Waiting"
+  local floor = maxSlot.isDefault and 0 or maxSlot.multiplier * adFormat.baseEcpm
+  if not sendLoad(adFormat, "Max", maxSlot.adUnitId, floor, delaySeconds) then return false end
+  maxSlot.baseGeneration = adFormat.baseGeneration
+  maxSlot.legacyCancelled = false
+  if not replacing then maxSlot.attemptCount = maxSlot.attemptCount + 1 end
+  return true
+end
+
+-- gửi request cho các bậc trống thấp nhất còn rảnh; lịch retry của bậc bị đẩy khỏi nhóm thì huỷ (nhả chỗ)
+local function refillFloors(adFormat)
+  if not adFormat.hasBase or isOffline() then return end
+  local targetSlots = lowestFreeFloors(adFormat)
+  for _, maxSlot in ipairs(adFormat.maxFloorSlots) do
+    if hasPendingRetry(adFormat, maxSlot) and not contains(targetSlots, maxSlot) then
+      cancelPendingLoad(adFormat, maxSlot)
+    end
+  end
+  if isCacheFull(adFormat) then return end
+  local freeCount = maxConcurrentFloors(adFormat) - countBusyFloors(adFormat)
+  for _, maxSlot in ipairs(targetSlots) do
+    if freeCount > 0 and not isBusy(adFormat, maxSlot) and requestMaxLoad(adFormat, maxSlot, 0) then
+      freeCount = freeCount - 1
+    end
+  end
+end
+
+local function resetFloorSlot(adFormat, maxSlot)
+  maxSlot.multiplier = maxSlot.configMultiplier
+  maxSlot.attemptCount = 0
+  maxSlot.failsInBase = 0
+  maxSlot.stoppedUntilNewBase = false
+  maxSlot.baseGeneration = adFormat.baseGeneration
+end
+
+-- id default load xong: eCPM của nó là base mới. Lịch retry bậc floor đang chờ bị huỷ; bậc đang bay reset khi có
+-- kết quả.
+local function startNewBase(adFormat, defaultEcpm)
+  adFormat.baseEcpm = defaultEcpm or 0
+  adFormat.hasBase = true
+  adFormat.baseGeneration = adFormat.baseGeneration + 1
+  for _, maxSlot in ipairs(adFormat.maxAllSlots) do
+    if getStatus(adFormat, maxSlot.adUnitId) ~= "Loading" then
+      if maxSlot.isDefault then
+        maxSlot.attemptCount = 0
+      else
+        cancelPendingLoad(adFormat, maxSlot)
+        resetFloorSlot(adFormat, maxSlot)
+      end
+    end
+  end
+end
+
+-- cứ failsToDecreaseMultiplier lần fail liên tiếp thì hệ số -0.1, không thấp hơn hệ số bậc liền dưới (bậc 1: x1)
+local function decreaseMultiplier(adFormat, maxSlot)
+  local period = adFormat.config.failsToDecreaseMultiplier
+  if period > 0 and maxSlot.attemptCount > 0 and maxSlot.attemptCount % period == 0
+      and maxSlot.multiplier > maxSlot.minMultiplier then
+    local lowered = math.floor((maxSlot.multiplier - MULTIPLIER_STEP) * 100 + 0.5) / 100
+    maxSlot.multiplier = math.max(lowered, maxSlot.minMultiplier)
+  end
+end
+
+-- nạp lại các id default rảnh (cách nhau theo defaultStartDelay) rồi lấp bậc floor. overridePendingRetry = true thì
+-- id đang chờ retry cũng được xếp lịch mới (thay lịch cũ), như Resume(.., true) lúc có mạng lại của thuật toán 8.
+local function reloadDefaults(adFormat, firstDelaySeconds, overridePendingRetry)
+  local defaultIndex = 0
+  for _, maxSlot in ipairs(adFormat.maxDefaultSlots) do
+    if not isLoadingOrReady(adFormat, maxSlot.adUnitId)
+        and (overridePendingRetry or not hasPendingRetry(adFormat, maxSlot)) then
+      requestMaxLoad(adFormat, maxSlot, firstDelaySeconds + defaultStartDelay(adFormat, maxSlot, defaultIndex))
+      defaultIndex = defaultIndex + 1
+    end
+  end
+  refillFloors(adFormat)
+end
+
+-- danh sách id còn rỗng (sc_ad_bid_floor chưa về) thì chưa khởi động; Unity gọi lại hàm init khi danh sách về
+local function startMax(adFormat)
+  if adFormat.maxStarted then return end
+  local defaultUnits, floorUnits = collectAdUnits(adFormat, "Max")
+  if #defaultUnits + #floorUnits == 0 then return end
+  adFormat.maxStarted = true
+  for tier, maxSlot in ipairs(floorUnits) do
+    maxSlot.configMultiplier = maxSlot.multiplier
+    maxSlot.minMultiplier = tier == 1 and 1 or floorUnits[tier - 1].multiplier
+  end
+  for _, group in ipairs({ defaultUnits, floorUnits }) do
+    for _, maxSlot in ipairs(group) do
+      if #maxSlot.serverRetry > 0 then
+        maxSlot.retrySchedule = maxSlot.serverRetry
+      else
+        maxSlot.retrySchedule = maxSlot.isDefault and adFormat.config.defaultRetry or adFormat.config.floorRetry
+      end
+      maxSlot.attemptCount = 0
+      maxSlot.failsInBase = 0
+      maxSlot.stoppedUntilNewBase = false
+      maxSlot.baseGeneration = 0
+      table.insert(maxSlot.isDefault and adFormat.maxDefaultSlots or adFormat.maxFloorSlots, maxSlot)
+      table.insert(adFormat.maxAllSlots, maxSlot)
+      adFormat.maxSlotById[maxSlot.adUnitId] = maxSlot
+    end
+  end
+  for position, maxSlot in ipairs(adFormat.maxDefaultSlots) do
+    requestMaxLoad(adFormat, maxSlot, defaultStartDelay(adFormat, maxSlot, position - 1))
+  end
+end
+
+-- ======================= BƯỚC B + C: ADMOB =======================
+local function loadAdmobDefault(adFormat, admobDefault, delaySeconds)
+  if not isLoadingOrReady(adFormat, admobDefault.adUnitId) then
+    sendLoad(adFormat, "Admob", admobDefault.adUnitId, 0, delaySeconds, nil)
+  end
+end
+
+local function getLinkedLoad(adFormat, admobFloorUnit, maxAdUnitId)
+  local listKey = admobFloorUnit.adUnitId .. "@" .. maxAdUnitId
+  adFormat.linkedLoadByKey[listKey] = adFormat.linkedLoadByKey[listKey]
+      or { listKey = listKey, admobFloorUnit = admobFloorUnit, maxAdUnitId = maxAdUnitId }
+  return adFormat.linkedLoadByKey[listKey]
+end
+
+local function isRunningCascade(adFormat, cascade)
+  return cascade ~= nil and adFormat.cascadeByMaxId[cascade.maxAdUnitId] == cascade
+end
+
+-- xin nấc hiện tại của thác; nấc đang load / đang giữ ad / bị từ chối thì xuống nấc kế. Hết nấc -> dừng thác.
+local function runCascade(adFormat, cascade)
+  local steps = adFormat.admobFloorUnits
+  while cascade.currentStep <= #steps do
+    local admobFloorUnit = steps[cascade.currentStep]
+    local linkedLoad = getLinkedLoad(adFormat, admobFloorUnit, cascade.maxAdUnitId)
+    local floor = cascade.maxEcpm * admobFloorUnit.multiplier
+    if not isLoadingOrReady(adFormat, linkedLoad.listKey)
+        and sendLoad(adFormat, "Admob", admobFloorUnit.adUnitId, floor, 0, cascade.maxAdUnitId) then
+      linkedLoad.ownerCascade = cascade
+      return
+    end
+    cascade.currentStep = cascade.currentStep + 1
+  end
+  adFormat.cascadeByMaxId[cascade.maxAdUnitId] = nil
+end
+
+-- id MAX vừa load được ad giá maxEcpm -> thác giá AdMob mới, thay thác cũ của đúng id MAX đó
+local function startCascade(adFormat, maxSlot, maxEcpm)
+  if #adFormat.admobFloorUnits == 0 or not maxEcpm or maxEcpm <= 0 then return end
+  adFormat.cascadeCount = adFormat.cascadeCount + 1
+  local cascade = { number = adFormat.cascadeCount, maxAdUnitId = maxSlot.adUnitId, maxEcpm = maxEcpm, currentStep = 1 }
+  adFormat.cascadeByMaxId[maxSlot.adUnitId] = cascade
+  runCascade(adFormat, cascade)
+end
+
+local function startAdmob(adFormat)
+  if adFormat.admobStarted then return end
+  local defaultUnits, floorUnits = collectAdUnits(adFormat, "Admob")
+  if #defaultUnits + #floorUnits == 0 then return end
+  adFormat.admobStarted = true
+  for nameOrder, admobFloorUnit in ipairs(floorUnits) do admobFloorUnit.nameOrder = nameOrder end
+  table.sort(floorUnits, function(left, right)
+    if left.multiplier ~= right.multiplier then return left.multiplier > right.multiplier end
+    return left.nameOrder < right.nameOrder
+  end)
+  adFormat.admobFloorUnits = floorUnits
+  for _, admobDefault in ipairs(defaultUnits) do
+    admobDefault.attemptCount = 0
+    adFormat.admobDefaultById[admobDefault.adUnitId] = admobDefault
+    loadAdmobDefault(adFormat, admobDefault, 0)
+  end
+end
+
+-- ======================= KẾT QUẢ TỪ UNITY =======================
+local function isLostAd(lastError)
+  return lastError == "expired" or lastError == "not_ready_at_show" or lastError:find("^show_failed") ~= nil
+end
+
+local function onLoadSuccess(adFormat, adUnitId, linkedMaxAdUnitId)
+  if linkedMaxAdUnitId then
+    local linkedLoad = adFormat.linkedLoadByKey[adUnitId .. "@" .. linkedMaxAdUnitId]
+    if not linkedLoad then return end
+    local cascade = linkedLoad.ownerCascade
+    linkedLoad.ownerCascade = nil
+    if isRunningCascade(adFormat, cascade) then adFormat.cascadeByMaxId[cascade.maxAdUnitId] = nil end
+    return
+  end
+
+  local admobDefault = adFormat.admobDefaultById[adUnitId]
+  if admobDefault then
+    admobDefault.attemptCount = 0
+    return
+  end
+
+  local maxSlot = adFormat.maxSlotById[adUnitId]
+  if not maxSlot then return end
+  local loadedEcpm = getAdEntry(adFormat, adUnitId).eCpm
+  maxSlot.attemptCount = 0
+  if maxSlot.isDefault then startNewBase(adFormat, loadedEcpm)
+  elseif maxSlot.baseGeneration ~= adFormat.baseGeneration then resetFloorSlot(adFormat, maxSlot)
+  else maxSlot.failsInBase = 0 end
+  refillFloors(adFormat)
+  startCascade(adFormat, maxSlot, loadedEcpm)
+end
+
+local function onLoadFail(adFormat, adUnitId, linkedMaxAdUnitId)
+  local listKey = linkedMaxAdUnitId and (adUnitId .. "@" .. linkedMaxAdUnitId) or adUnitId
+  local lastError = getAdEntry(adFormat, listKey).lastError or ""
+
+  if linkedMaxAdUnitId then
+    local linkedLoad = adFormat.linkedLoadByKey[listKey]
+    if not linkedLoad or isLostAd(lastError) then return end
+    local cascade = linkedLoad.ownerCascade
+    linkedLoad.ownerCascade = nil
+    if isRunningCascade(adFormat, cascade) then
+      cascade.currentStep = cascade.currentStep + 1
+      runCascade(adFormat, cascade)
+    end
+    return
+  end
+
+  local admobDefault = adFormat.admobDefaultById[adUnitId]
+  if admobDefault then
+    if isLostAd(lastError) then return loadAdmobDefault(adFormat, admobDefault, 0) end
+    local backoffSeconds = 2 ^ math.min(admobDefault.attemptCount, ADMOB_BACKOFF_MAX_POW)
+    admobDefault.attemptCount = admobDefault.attemptCount + 1
+    return loadAdmobDefault(adFormat, admobDefault, backoffSeconds)
+  end
+
+  local maxSlot = adFormat.maxSlotById[adUnitId]
+  if not maxSlot then return end
+  if isLostAd(lastError) then
+    if not maxSlot.isDefault then maxSlot.multiplier = maxSlot.configMultiplier end
+    return reloadDefaults(adFormat, 0)
+  end
+  -- fail lúc mất mạng: không tính, không retry; OnNetworkBack nạp lại khi có mạng (như thuật toán 8)
+  if hasNetworkApi() then
+    if isOffline() then
+      maxSlot.attemptCount = math.max(0, maxSlot.attemptCount - 1)
+      return
+    end
+  elseif isLegacyOfflineError(lastError) then
+    maxSlot.attemptCount = math.max(0, maxSlot.attemptCount - 1)
+    return requestMaxLoad(adFormat, maxSlot, LEGACY_OFFLINE_RETRY_SECONDS)
+  end
+  if maxSlot.isDefault then return requestMaxLoad(adFormat, maxSlot, retryDelayOf(maxSlot)) end
+  if maxSlot.baseGeneration ~= adFormat.baseGeneration then
+    resetFloorSlot(adFormat, maxSlot)
+    return refillFloors(adFormat)
+  end
+
+  maxSlot.failsInBase = maxSlot.failsInBase + 1
+  decreaseMultiplier(adFormat, maxSlot)
+  local failLimit = maxFailsOf(adFormat, maxSlot)
+  if failLimit > 0 and maxSlot.failsInBase >= failLimit then
+    maxSlot.stoppedUntilNewBase = true
+    return refillFloors(adFormat)
+  end
+  local retried = contains(lowestFreeFloors(adFormat), maxSlot)
+      and requestMaxLoad(adFormat, maxSlot, retryDelayOf(maxSlot))
+  if not retried then refillFloors(adFormat) end
+end
+
+-- Unity báo lúc ad LÊN MÀN HÌNH; lệnh load gửi lúc này được đếm delay từ lúc ad đóng
+local function onShowSuccess(adFormat, adUnitId, linkedMaxAdUnitId)
+  if linkedMaxAdUnitId then return end
+  local admobDefault = adFormat.admobDefaultById[adUnitId]
+  if admobDefault then return loadAdmobDefault(adFormat, admobDefault, 0) end
+  local maxSlot = adFormat.maxSlotById[adUnitId]
+  if maxSlot and not maxSlot.isDefault then maxSlot.multiplier = maxSlot.configMultiplier end
+  reloadDefaults(adFormat, RELOAD_AFTER_SHOW)
+end
+
+-- ======================= UNITY GỌI VÀO =======================
+function OnInitMaxSuccess()
+  beginCall()
+  startMax(INTER)
+  startMax(RW)
+end
+
+function OnInitAdmobSuccess()
+  beginCall()
+  for _, adFormat in ipairs({ INTER, RW }) do
+    startMax(adFormat)
+    startAdmob(adFormat)
+  end
+end
+
+-- có mạng lại: nạp lại id default (thay cả lịch retry đang chờ) rồi lấp bậc floor, Inter trước Reward
+function OnNetworkBack()
+  beginCall()
+  for _, adFormat in ipairs({ INTER, RW }) do
+    if adFormat.maxStarted then reloadDefaults(adFormat, 0, true) end
+  end
+end
+
+function OnInterstitialLoadSuccess(adUnitId, linkedMaxAdUnitId) beginCall() onLoadSuccess(INTER, adUnitId, linkedMaxAdUnitId) end
+function OnInterstitialLoadFail(adUnitId, linkedMaxAdUnitId) beginCall() onLoadFail(INTER, adUnitId, linkedMaxAdUnitId) end
+function OnInterstitialShowSuccess(adUnitId, linkedMaxAdUnitId) beginCall() onShowSuccess(INTER, adUnitId, linkedMaxAdUnitId) end
+
+function OnRewardedLoadSuccess(adUnitId, linkedMaxAdUnitId) beginCall() onLoadSuccess(RW, adUnitId, linkedMaxAdUnitId) end
+function OnRewardedLoadFail(adUnitId, linkedMaxAdUnitId) beginCall() onLoadFail(RW, adUnitId, linkedMaxAdUnitId) end
+function OnRewardedShowSuccess(adUnitId, linkedMaxAdUnitId) beginCall() onShowSuccess(RW, adUnitId, linkedMaxAdUnitId) end
+
+-- ======================= GAME HỎI SHOW =======================
+-- Hàm hỏi chỉ đọc, không đổi trạng thái: một lượt show có thể bị hỏi 2 lần (CanShowInterstitial rồi
+-- ShowInterstitial). Unity chỉ hỏi khi ad sắp chiếu là ad của Lua.
+local SHOW_RULES = {
+  minEcpm = 0,                  -- USD / 1000 lượt; 0 = tắt ngưỡng
+  relaxAfterSeconds = 180,   -- quá lâu chưa có inter (sinceLastInterSec) thì cho show bất kể giá; 0 = không nới
+}
+
+local function hasReadyAd(adList)
+  for _, entry in pairs(adList) do if entry.status == "Ready" then return true end end
+  return false
+end
+
+-- eCpm của ad sẽ được chiếu (C# chọn Ready eCpm cao nhất); nil = không có ad
+local function bestReadyEcpm(adList)
+  local best
+  for _, entry in pairs(adList) do
+    if entry.status == "Ready" then
+      local ecpm = entry.eCpm or 0
+      if best == nil or ecpm > best then best = ecpm end
+    end
+  end
+  return best
+end
+
+function IsShowInterstitial(params)
+  params = params or {}
+  local best = bestReadyEcpm(context.listInterstitialAd)
+  if best == nil then return false end
+  local minEcpm = SHOW_RULES.minEcpm
+  if minEcpm <= 0 or best >= minEcpm then return true end
+  local relax = SHOW_RULES.relaxAfterSeconds
+  return relax > 0 and (params.sinceLastInterSec or 0) >= relax
+end
+
+-- rewarded được show bằng cả inter
+function IsShowRewarded()
+  return hasReadyAd(context.listRewardedAd) or hasReadyAd(context.listInterstitialAd)
+end

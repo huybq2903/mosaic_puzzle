@@ -121,8 +121,8 @@ namespace Falcon.Modules.Core.BigData
     /// Nhãn của một LẦN XEM AD đang mở — cùng nhóm "instance" với session/turn, cook nhặt bằng SQL
     /// vào hộp ad view.
     /// <br/>Hợp đồng §D11 (bản 11/08) đã chốt event id cho cả ba scope instance; điều kiện nối của
-    /// <c>ad_view</c> là <c>adViewId</c> §C phải sống — SDK đã ship nên thoả. Còn chờ loader MỞ
-    /// mapping rule thì dữ liệu mới vào hộp.
+    /// <c>ad_view</c> là <c>adViewId</c> §C phải sống — SDK đã ship nên thoả. Mapping phía kho đã
+    /// chạy (loader xác nhận 12/11).
     /// </summary>
     [Serializable]
     public class FAdViewLabelLog : ALabelLog

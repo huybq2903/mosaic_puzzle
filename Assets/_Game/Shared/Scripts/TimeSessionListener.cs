@@ -29,7 +29,9 @@ public class TimeSessionListener : ISessionListener
     private static void SetSystemTime()
     {
         WrapperTime.OverrideTime(-1);
-        if (Application.internetReachability == NetworkReachability.NotReachable || !AccountManager.Instance.IsLogin)
+        if (Application.internetReachability == NetworkReachability.NotReachable ||
+            !AccountManager.Instance.IsLogin ||
+            Application.isEditor)
         {
             return;
         }

@@ -85,7 +85,7 @@ IntelliSense sau dấu chấm chỉ hiện đúng những việc của entity đ
 
 | Nhóm | Đọc / sửa cache | Báo khoảnh khắc |
 |---|---|---|
-| `Level` | `CurrentTurnId` · `CurrentTurn` · `WinStreak`/`LoseStreak` · `UpdateTurn` · `ResetWinStreak`/`ResetLoseStreak` · `OnPauseExit` · `OnResume` | `OnStart` · `OnPass` · `OnFail` |
+| `Level` | `CurrentTurnId` · `CurrentTurn` · `UpdateTurn` · `OnPauseExit` · `OnResume` | `OnStart` · `OnPass` · `OnFail` |
 | `Offer` | `CurrentImpressionId` · `Current` | `OnShown` · `OnClicked` · `OnClosed` |
 | `Ad` | `CurrentViewId(type)` · `CurrentView(type)` · `UpdateContext` | `OnRequested` · `OnShown` · `OnClosed` |
 | `Purchase` | `CurrentAttemptId` · `CurrentAttempt` | `OnStarted` · `OnFailed` |
@@ -141,7 +141,6 @@ muộn lệch nhau và không ai biết bên nào đúng.
 | `Ad.CurrentView(type)` | `AdViewSnapshot` | id + adWhere/adWhen/adMediation + hai mốc thời gian |
 | `Offer.Current` | `OfferSnapshot` | id + sản phẩm/giá/bề mặt + đã bấm/đã mua + thời lượng hiển thị |
 | `Purchase.CurrentAttempt` | `PurchaseAttemptSnapshot` | id + productId/where/giá/tiền tệ |
-| `Level.WinStreak` / `Level.LoseStreak` | int | game hiện UI chuỗi thắng mà khỏi đếm lần hai |
 
 **Mọi snapshot là bản SAO**, không phải object state sống: trả state ra thì game sửa được cache
 của SDK, mất luôn ý nghĩa "SDK là nguồn chân lý". `Offer.Current` cũng KHÔNG trả offer đang nằm
@@ -151,8 +150,8 @@ trong cửa sổ ân hạn — với game thì offer đó đã đóng thật.
 |---|---|
 | `Level.SetUserElo(() => rating)` | chỉ game biết điểm trình độ người chơi; khai một lần rồi SDK đọc tươi và điền vào mọi log level — truyền tay từng lời gọi thì chỗ nào quên là chỗ đó thủng dữ liệu |
 | `Level.UpdateTurn(difficulty:, movesLimit:, timeLimitSec:)` | cấu hình ván đổi giữa chừng là chuyện thật (mua thêm lượt đi, revive đổi độ khó). Trước đây muốn đổi phải `Level.OnStart` lại = **đè turn** = một ván thành hai lượt trong dữ liệu |
-| `Ad.UpdateContext(type, adWhere:, adWhen:, adMediation:)` | preload lúc chưa biết chiếu ở đâu / trong ngữ cảnh nào; biết lúc nào ghi lúc đó, show/impression/close tự mang theo |
-| `App.ReportOpenSource` · `Funnel.Register` · `Level.ResetWinStreak/LoseStreak` | xem §4c / §4h / §3 |
+| `Ad.UpdateContext(type, adWhere:, adWhen:, adMediation:, adAlgorithm:)` | preload lúc chưa biết chiếu ở đâu / trong ngữ cảnh nào; biết lúc nào ghi lúc đó, show/impression/close tự mang theo. `adAlgorithm` (1.5.5) là tên thuật toán load của cả ĐỢT — SDK không tự biết, mediation khai một lần |
+| `App.ReportOpenSource` · `Funnel.Register` | xem §4c / §4h |
 
 **Cache của entity ad view** (bổ sung 2026-08-06): slot giữ thêm `adWhere` / `adWhen` /
 `adMediation` — cả ba bất biến trong một lần xem ad nhưng trước đây bị vứt ngay sau log request,
@@ -162,6 +161,32 @@ lúc show mới biết — thông tin mới nhất là thông tin đúng nhất)
 cũng được điền theo luật đó, chỉ khi mediation bỏ trống.
 ⚠ `adWhen` là **field MỚI trên 3 event ad_request/ad_show/ad_close** — 3 event này vốn đã đang
 chờ loader xác nhận, gộp luôn vào lần báo đó.
+
+> ### ⚠ "Khai một lần" chỉ đúng với mốc NÀO CÓ bước lấy-từ-cache — án `adAlgorithm` (26/10/2026)
+>
+> Cơ chế khai-một-lần có **hai nửa**, và chúng không tự nối với nhau:
+>
+> | Nửa | Là gì | Ai làm |
+> |---|---|---|
+> | 1 | **Ô trên bản tin** để chở giá trị | người thêm field |
+> | 2 | **Cửa để khai** (`Ad.UpdateContext(...)` ghi vào cache của format) | người thêm tham số API |
+> | 3 | **Bước lấy-từ-cache** điền vào param trước khi gửi (`AdViewState.ApplyContext`) | ⚠ **dễ quên nhất** |
+>
+> Bản 1.5.5 thêm `adAlgorithm`: làm nửa 1 và nửa 2, **quên nửa 3 cho dòng load**. Bốn mốc vòng đời
+> (request · show · impression · close) đều đi qua `ApplyContext` nên có giá trị; còn
+> **`f_sdk_ad_load` dựng log CHỈ từ `AdLoadResultParam`**, không ai đọc cache — nên mediation làm
+> **đúng** hướng dẫn ("khai một lần") mà cột `ad_algorithm` của dòng load vẫn **trống**, và không ai
+> hiểu vì sao. Phía đọc số bắt được ngay khi rà: *"log này có gửi tham số đó không, hay client quên
+> truyền?"*. Đó là **cửa mở mà không có đường vào** — tệ hơn thiếu cả hai nửa, vì nó trông như đã xong.
+>
+> **Luật rút ra, hỏi trước khi thêm bất kỳ field "khai một lần" nào:**
+> *"MỖI mốc chở field này dựng log từ đâu — từ param của caller, hay có bước lấy-từ-cache?"*
+> Mốc nào dựng log thuần từ param thì phải tự nối: `param.x ?? cache.X(...)`.
+>
+> Và khi nối thì để ý **đọc cache ở đâu**: 1.5.6 dùng `AdViewCache.CurrentAlgorithm` **đọc thẳng ô
+> request** chứ không qua `Current()`, vì `Current()` ưu tiên view ĐANG CHIẾU — mà mediation hay
+> load ad kế tiếp ngay sau khi ad hiện tại đóng, nên đọc kiểu kia là mấy dòng load đó lại trống
+> (đúng cái bẫy đã sửa cho `ad_view_id` ở `PendingViewId`).
 
 **Một base cho cả họ param**: `AdParam : AdViewParam` và `InAppParam : IapPurchaseAttemptParam` —
 định danh của vòng đời (`adViewId`, `purchaseAttemptId`…) khai MỘT chỗ, thêm field mới khỏi phải
@@ -732,6 +757,10 @@ Luật để biết field nào còn đúng trên dòng gộp:
 | `adRev`, `impressionCount` | ✓ giá trị đúng | cộng được |
 | `adNetwork`, `adPrecision`, `adCountry`, `adWhere`, `currentLevel` | ✓ giá trị đúng | nằm trong key — cùng giá trị mới được gộp chung |
 | `adViewId`, `fillLatencyMs`, `playTurnId` | **bỏ trống** | định danh/thời điểm của MỘT lần xem; giá trị lúc gửi chỉ đúng cho impression cuối trong cụm |
+| `adUnitId` | ✅ **ĐÃ vào KEY từ 19/10** — trước khi mediation gửi | Chiều để **đối chiếu tiền với dashboard mediation** — họ báo doanh thu theo ad unit. Thêm vào key gần như **miễn phí** khi game có một unit mỗi format (unit bị quyết định bởi format + chỗ chiếu, không nhân thêm dòng); game nhiều unit thì số dòng nhân lên, mà phần nhân lên **chính là thông tin** cần |
+| `prevFullScreenAdFormat`, `prevFullScreenAdSec` | **không tồn tại** trên dòng gộp *(19/10)* | `sec` là số liên tục nên không cộng được cũng không key được; mà banner là **đồ đạc cố định**, không "hiện sau" quảng cáo nào — câu hỏi này chỉ có nghĩa với họ dính-màn đặt trong luồng UI (native/MREC/collapsible), và cả ba đều đi **per-impression** nên mang đủ cả hai field |
+| 4 param `liveOps*` | **không có** trên dòng ad nào — kể cả inter/reward *(rà 19/10)* | **Chưa call site nào đóng dấu** (grep `Modules/Events` + `Modules/Core/ThirdParty/Mediation`: 0 kết quả), nên đây không phải thiệt hại của việc gộp. Riêng banner còn một tầng nữa: Mediation gọi thẳng `BannerLogService.Log(7 scalar)` chứ không qua `OnImpression(AdParam)` nên **không có param object** để ai đóng dấu. Mà với banner thì gắn event cũng chỉ là **ambient** (*"lúc đó event đang chạy"*) — thứ đã bị bác. Câu *"doanh thu ad trong lúc event X chạy"* để **kho tự suy** bằng cửa sổ `cycle_start_ts`/`cycle_end_ts` của stream live-ops |
+| `adInstanceName`, `waterfallPosition` | **bỏ trống**, ĐỪNG đưa vào key | Entry trong waterfall, cardinality cao → vào key là chẻ vụn cụm, phá đúng mục đích gộp. Phân tích waterfall thuộc dashboard mediation: họ thấy cả **load hỏng** và **no-fill**, client chỉ thấy cái đã thắng. Dòng per-impression (inter/reward) thì vẫn giữ — ở đó miễn phí |
 
 Cơ chế: `PlainLog.IsSpanRecord` (property, không phải field — `FKeyService` chỉ encode field nên
 cờ không lọt vào payload). `FAggregatedAdLog` bật cờ; `AdLogService.Decor` thấy cờ thì thôi đóng
@@ -747,6 +776,13 @@ thì bản thân đã vô nghĩa: banner tự refresh chứ không phải ngư�
 mỏi, eCPM theo vị trí, phễu fill) vì mỗi lần là một quyết định của người chơi. Banner là cái đồng
 hồ — "impression thứ n" của nó chỉ là cách đo thời lượng chơi vòng vo, mà thời lượng đã có
 `total_play_time` đo thẳng.
+
+⚠ **Cái bẫy im lặng của mọi field không-vào-key** (ghi 19/10). Ngày mediation bắt đầu gửi
+`adUnitId` mà key cụm chưa có nó: banner (và mọi format đi cụm) **mất field trong im lặng**, còn
+inter/reward thì có → chart *"doanh thu theo ad unit"* cho banner ra **rỗng**, không lỗi, không
+warning, và không ai đoán được vì sao. Nên luật là: **field mới mà phía đọc muốn chẻ theo thì phải
+vào key CÙNG LÚC với lúc nó lên wire** — không thì phải nói trước với loader rằng format gộp không
+chẻ được theo chiều đó.
 
 **Ghi chú cho loader**: đếm impression banner phải là `sum(impression_count)`, không phải
 `count(*)`. Còn `typeCount` trên dòng gộp thì tuỳ bản cài sổ cái — game dùng module Mediation thì
@@ -789,9 +825,10 @@ Litmus test: muốn **tính** trên nó → param; chỉ muốn **lọc** theo n
 `out_of_moves/out_of_time/died/quit`). Field mới theo §H4: nullable + `FKey(RemoveIfNull)` +
 KHÔNG đi qua clamp/Unknown (field cũ giữ nguyên CorrectValues — đổi giữa chừng gãy baseline).
 
-**Đã thêm ngoài hợp đồng (cần đăng ký key với loader)**: `winStreak` / `loseStreak` trên
-level log — SDK tự tính (luật §H3), xuyên level, persist qua IDataPool; Pass/Fail cập nhật
-(mỗi turn+status đếm 1 lần, double-fire không lệch), Start/HeartBeat mang streak trước trận.
+**ĐÃ NGHỈ HƯU 14/10**: `winStreak` / `loseStreak` trên level log — bỏ hẳn (cột, bộ đếm và 4 API
+`WinStreak`/`LoseStreak`/`ResetWinStreak`/`ResetLoseStreak`). Chuỗi Pass/Fail suy lại được từ chính
+stream level, còn mọi định nghĩa "phủ cả ván bỏ ngang" đều là chính sách per-game. Chuỗi của game
+thì game tự giữ, gửi bằng key riêng có tiền tố hoặc `Label.User("streak_status", n)`.
 Ứng viên tương lai CÓ TRIGGER (không xin trước): nâng streak thành central user param trên
 mọi log khi có demand phân tích frustration-purchase / rescue-ad — cơ chế sẵn
 (IFCustomInfoRepository đọc từ 2 key dataPool), chỉ chờ demand + hợp đồng.
@@ -819,8 +856,10 @@ cảnh báo — nhãn không có `playTurnId` thì server không biết dán và
   chung câu `argMax` theo instance như session/turn — nên chi phí phía loader chỉ là mapping rule.
   ⚠ Giá trị thấp có chủ đích: ba instance này sống vài giây tới ~30 giây, nhãn thường thuộc về
   PHIÊN hoặc NGƯỜI CHƠI đúng hơn. Mở khi có nhu cầu thật.
-- Doc request đã viết: `Request-Ump-PermissionLog.md` (owner module `Core/ThirdParty/Ump` — ATT +
-  ads_consent, §D8).
+- Doc request đã viết: `Request-Permission-AttConsentPush.md` (§A → owner module
+  `Core/ThirdParty/Ump`: ATT + ads_consent · §B → owner `Notification`: quyền push — §D8). Viết lại
+  09/11: 🔴 bản cũ (`Request-Ump-PermissionLog.md`) map `ConsentStatus.Obtained → granted`, mà
+  `Obtained` chỉ nghĩa là *"đã trả lời form"* — người bấm "Do not consent" cũng ra `Obtained`.
 - Doc request per module (owner khác): Mediation (ad_request §B, 3 param §D2 — carry §C đã
   tự có nhờ stamping), InAppPurchase (§D4 checkout funnel + isPurchased snapshot).
 

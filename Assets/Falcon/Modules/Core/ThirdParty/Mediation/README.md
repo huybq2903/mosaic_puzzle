@@ -28,10 +28,12 @@
   + với LevelPlay : Ironsource; Applovin; Digital Turbine (DT Exchange); Google (AdMob and Ad Manager); InMobi; Liftoff Monetize; Meta; Mintegral; Pangle; Smaato; Unity Ads; BidMachine; Moloco, Yandex
   + với Max : Ironsource, Applovin; Digital Turbine (DT Exchange); Google (AdMob and Ad Manager); InMobi; Liftoff Monetize; Meta; Mintegral; Pangle; Smaato; Unity Ads; BidMachine; Moloco; Verve; Yandex; Bigo Ads
 - Sau khi cấu hình xong, nhấn nút "Save" để lưu lại.
+- ManualInit Mediation : dành cho các dự án muốn chủ động Init Max (tránh bị giật/lag ở các level đầu khi chưa thực sự cần ads)
 
-### 3. Cấu hình MultiCall (chỉ hỗ trợ Max)
-- Vào File cấu hình trên menu "Falcon/Modules/ThirdParty/Mediation settings"
-- Nếu sử dụng multicall (Max), cần liên hệ MO để nhờ tạo chuỗi multicall này và điền vào
+### 3. Cấu hình TikTokSDK
+- Vào File cấu hình trên menu "Falcon/Modules/ThirdParty/TikTokSettings"
+- Điền các thông số do UA cung cấp
+- Module sẽ tự động khởi tạo, dev không cần làm gì nữa.
 
 ### 4. Khởi tạo Mediation
 - Mediation sẽ tự động được khởi tạo sau khi hiện UMP
@@ -47,9 +49,11 @@ public class MediationManager
     public void ShowBanner(string placementId);
     public void HideBanner();
     public bool IsBannerReady();
-    public void ShowInterstitial(string placementId, Action onInterstitialClosed = null, Action onFail = null, bool needAdBreak = false);
+    public void ShowInterstitial(string placementId, Action onInterstitialClosed = null, Action onFail = null, bool needAdBreak = false,
+        string adWhen = null, string triggerPlayTurnId = null);
     public bool IsInterstitialReady();
-    public void ShowRewardedVideo(string placementId, Action onRewardedComplete = null, Action onFail = null,  bool showInterstitialInstead = true);
+    public void ShowRewardedVideo(string placementId, Action onRewardedComplete = null, Action onFail = null,  bool showInterstitialInstead = true,
+        string adWhen = null, string triggerPlayTurnId = null);
     public bool IsRewardedVideoReady();
     public void SetRemoveAds(bool value);
     public StatusAds GetStatusAdsFromPlacement(string placementId, bool isRewarded = true);
@@ -129,6 +133,12 @@ public class MediationManager
     /// <param name="needAdBreak">trạng thái có cần hiện popup adbreak trước khi hiện quảng cáo hay không, dành cho ads interstitial trong gameplay kéo dài, tránh hiện quảng cáo đột ngột (false : không bật popup, true : có bật popup)
     /// thời gian hiện popup nằm trong file config của module "UI AdBreak".
     /// Trường hợp interstitial có trả thưởng, thì mặc định sẽ hiện popup Ad Break</param>
+    /// <param name="adWhen">QC chiếu VÌ SAO (cột BigData <c>ad_when</c>) — dùng hằng <c>FAdWhen</c>: <c>LevelWin</c> · <c>LevelFail</c> ·
+    /// <c>LevelStart</c> · <c>Retry</c> · <c>Revive</c> · <c>Booster</c> · <c>Home</c> · <c>AppOpen</c> · <c>Other</c>. Không truyền thì
+    /// <c>ad_when = Unknown</c> như trước</param>
+    /// <param name="triggerPlayTurnId">lượt chơi đã kích hoạt lần chiếu (BigData <c>trigger_play_turn_id</c>):
+    /// Inter sau thắng / thua = <c>FalconBigDataController.Level.LastEndedTurnId</c>; QC trong lượt (hồi sinh, booster) =
+    /// <c>Level.CurrentTurnId</c>; QC không do lượt nào (mở app, home, shop) thì bỏ trống. Truyền sai là sai cả khối QC của lượt</param>
     
     public void FunctionShowInterstitial()
     {
@@ -146,11 +156,16 @@ public class MediationManager
                 ProcessRewardedCallback(rc);
             },
             onFail: null,
-            needAdBreak: true
+            needAdBreak: true,
             //nếu trên config, interstitial có trả thưởng, thì mặc định sẽ hiện popup Ad Break
+            adWhen: FAdWhen.LevelWin,
+            triggerPlayTurnId: FalconBigDataController.Level.LastEndedTurnId
         );
         
     }
+
+    // gọn: MediationManager.Instance.ShowInterstitial("level_end", onClosed, onFail,
+    //     adWhen: FAdWhen.LevelWin, triggerPlayTurnId: FalconBigDataController.Level.LastEndedTurnId);
 
     private void ProcessRewardedCallback(RewardedCallback rewardedCallback)
     {
@@ -202,6 +217,16 @@ public class MediationManager
     public bool FunctionCheckIsInterstitialReady(){
         return MediationManager.Instance.IsInterstitialReady(); //true (false)
     }
+
+    /// <summary>
+    /// kiểm tra ĐẦY ĐỦ có show được interstitial ở placement này không:
+    /// không RemoveAds + placement Active (capping) + có ad + Lua script đồng ý (IsShowInterstitial)
+    /// dùng để quyết định có hiện popup "sắp có quảng cáo" / nút ad trước khi gọi ShowInterstitial
+    /// </summary>
+    
+    public bool FunctionCanShowInterstitial(){
+        return MediationManager.Instance.CanShowInterstitial("IntertitialWinGame"); //true (false)
+    }
     
 #endregion
 
@@ -214,6 +239,8 @@ public class MediationManager
     /// <param name="onFail">nếu hiển thị quảng cáo bị lỗi</param>
     /// <param name="placementId">Id của nơi gọi quảng cáo, lấy từ bảng cấu hình quảng cáo (VD : "RewardAdsBooster1", "RewardAdsBooster2"), dùng làm ID để thiết lập quản lý quảng cáo trên remote config</param>
     /// <param name="showInterstitialInstead">có hiển thị quảng cáo interstitial thay thế nếu Rewarded chưa sẵn sàng hay không</param>
+    /// <param name="adWhen">/ <param name="triggerPlayTurnId"> như ShowInterstitial. Rewarded trong lượt (hồi sinh, booster) =
+    /// <c>Level.CurrentTurnId</c>. Lượt bị đổi sang interstitial (showInterstitialInstead) thì inter mang cùng hai giá trị này</param>
     
     public void FunctionShowRewardedVideo(){
         //placementId lấy từ bảng MO AdsSettings
@@ -229,9 +256,14 @@ public class MediationManager
                     ProcessRewardedCallback(rc);
                 },
                 onFail: () => { Debug.Log("TOAST : Tải quảng cáo lỗi"); },
-                showInterstitialInstead: true
+                showInterstitialInstead: true,
+                adWhen: FAdWhen.Booster,
+                triggerPlayTurnId: FalconBigDataController.Level.CurrentTurnId
             );
     }
+
+    // gọn: MediationManager.Instance.ShowRewardedVideo("revive", onReward, onFail,
+    //     adWhen: FAdWhen.Revive, triggerPlayTurnId: FalconBigDataController.Level.CurrentTurnId);
 
     /// <summary>
     /// kiểm tra quảng cáo rewarded có đang sẵn sàng hay không
@@ -269,9 +301,83 @@ public class MediationManager
     }
 #endregion
 
+#region manual Init Mediation
+	MediationManager.Instance.InitMediation();
+#endregion
 ```
+
+
 tham khảo ví dụ về phần hiện quảng cáo ở Scene "Assets/Falcon/Modules/Core/ThirdParty/Mediation/Samples/Scenes/Demo.unity"
 Code ví dụ ở file [DemoTestMediation.cs](Samples/Scripts/DemoTestMediation.cs)
+
+### 6. Chặn / cho phép show interstitial bằng Lua script (`IsShowInterstitial`)
+
+Server gửi Lua script qua `sc_ad_monetize_lua_script` (LuaDynamic). Script có hàm `IsShowInterstitial(params)` trả
+`true` / `false` để quyết định lượt inter có được show không — đổi quy tắc chỉ cần sửa script trên server, không build lại app.
+
+**Phía game: không cần làm gì thêm.** Module tự hỏi Lua:
+
+| Hàm | Hành vi |
+|---|---|
+| `MediationManager.Instance.ShowInterstitial(...)` | Hỏi Lua trước khi show. Lua từ chối → gọi `onFail` (không có `onFail` thì gọi `onInterstitialClosed`), không show, không bắn `OnShowAttempt` |
+| `MediationManager.Instance.CanShowInterstitial(placementId)` | `true` khi: không RemoveAds + placement `Active` + có ad + Lua đồng ý. Gọi trước khi hiện popup ad break / nút ad để không hiện popup rồi bị chặn |
+| `MediationManager.Instance.IsShowInterstitial(placementId, param)` | Chỉ hỏi Lua, không kiểm tra gì khác, không show. Dùng khi cần câu trả lời thô của script |
+
+`CanShowInterstitial` chỉ để quyết định có hiện popup hay không. Mỗi điểm chiếu vẫn phải gọi `ShowInterstitial`, nếu không thì lần đó
+không được ghi (`f_sdk_ad_show_skipped` / `f_sdk_ad_show_attempt`). Mỗi lượt gọi trả về đúng một callback (`onInterstitialClosed`
+hoặc `onFail`).
+
+```csharp
+var placementId = "IntertitialWinGame";
+if (MediationManager.Instance.CanShowInterstitial(placementId))
+{
+    //chắc chắn chiếu được -> hiện popup ad break ... rồi
+    MediationManager.Instance.ShowInterstitial(placementId, OnContinue, OnContinue);
+}
+else
+{
+    //KHÔNG chiếu gì — vẫn phải gọi để Mediation ghi lần này (bị chặn / không có ad). Gọi lại OnContinue như nhánh trên.
+    MediationManager.Instance.ShowInterstitial(placementId, OnContinue, OnContinue);
+}
+```
+
+**Khi nào Lua được hỏi:** chỉ khi phiên chạy chế độ LUA **và** ad sắp chiếu là ad do Lua load. Không có script, phiên
+MultiCall, ad của luồng cũ (FloorPersonalization) → coi như Lua đồng ý. Script lỗi / thiếu hàm → mặc định `true`.
+
+**Phía script (server):** hàm nhận `params` và đọc `context`:
+
+```lua
+-- params = { where, level, sinceLastInterSec, interShownCount, ... }
+--   where             : placementId
+--   level             : level hiện tại
+--   sinceLastInterSec : số giây từ lần inter gần nhất lên màn hình (chưa có thì tính từ lúc mở app)
+--   interShownCount   : số inter đã chiếu trong phiên
+-- context.listInterstitialAd[key] = { status = "Ready" | ..., eCpm (USD / 1000 lượt), networkName, ... }
+local MIN_ECPM = 1.0
+
+function IsShowInterstitial(params)
+  params = params or {}
+  local best
+  for _, entry in pairs(context.listInterstitialAd) do
+    if entry.status == "Ready" and (best == nil or (entry.eCpm or 0) > best) then best = entry.eCpm or 0 end
+  end
+  if best == nil then return false end
+  if (params.level or 0) < 5 then return false end      -- ví dụ: không show inter trước level 5
+  return best >= MIN_ECPM                               -- ví dụ: chỉ show ad có eCpm >= 1 USD
+end
+```
+
+- Ad được chiếu là ad `Ready` có **eCpm cao nhất** — tính `best` như trên là đúng ad sắp lên màn hình.
+- **Hàm phải chỉ đọc, không đổi trạng thái:** một lượt show có thể bị hỏi 2 lần (`CanShowInterstitial` rồi
+  `ShowInterstitial`). Đừng đếm số lần hỏi; cần nới quy tắc theo thời gian thì dùng `params.sinceLastInterSec`.
+- Quy tắc cần dữ liệu ngoài danh sách trên (IAP, quốc gia, số ngày từ lúc cài...) → phải thêm field vào `params`
+  trong `LuaAdMonetize.AskShow` (sửa client).
+- **Rewarded không bị chặn** trong `ShowRewardedVideo` (người chơi đã bấm xem để nhận thưởng). `IsShowRewarded(placementId)`
+  chỉ để game tự hỏi khi cần, ví dụ quyết định có hiện nút xem quảng cáo.
+- Script mẫu đầy đủ: `Scripts/Runtime/Service/LuaDynamic/Samples/Resources/LuaAdTest.txt` (`SHOW_RULES`). Chi tiết
+  LuaDynamic: `Scripts/Runtime/Service/LuaDynamic/README.md`.
+- Log khi bật `ENABLE_DEBUG_LOG`: `inter @ <placement>: ... luaMode=... luaReady=...`,
+  `[LuaAd] IsShowInterstitial(<where>) -> True/False`, bị chặn thì `show inter bị chặn bởi Lua IsShowInterstitial @ <placement>`.
 
 ## Chi tiết
 

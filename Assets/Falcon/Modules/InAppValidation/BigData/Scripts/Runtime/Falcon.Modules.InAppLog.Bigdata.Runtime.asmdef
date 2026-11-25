@@ -17,12 +17,6 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [
-        {
-            "name": "com.unity.purchasing",
-            "expression": "5.0.0",
-            "define": "FALCON_IAP_5_OR_NEWER"
-        }
-    ],
+    "versionDefines": [],
     "noEngineReferences": false
 }

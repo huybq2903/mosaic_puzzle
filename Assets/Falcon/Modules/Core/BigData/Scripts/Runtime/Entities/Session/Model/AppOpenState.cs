@@ -32,6 +32,7 @@ namespace Falcon.Modules.Core.BigData
         public const int LATE_REPORT_GRACE_MILLIS = 10_000;
 
         private long? _pausedAtMillis;
+        private bool _pausedByFullscreenAd;
         private int _openIndex;
         private bool _coldOpened;
         private OpenSource? _pendingSource;
@@ -46,9 +47,14 @@ namespace Falcon.Modules.Core.BigData
         /// khoảng VẮT QUA suspend — đồng hồ đơn điệu đóng băng khi máy ngủ nên đo bằng nó là
         /// backgroundDurationSec đếm thiếu gần hết. ĐỪNG "sửa" sang monotonic.
         /// </summary>
-        public void MarkPause(long nowMillis)
+        /// <param name="byFullscreenAd">
+        /// Pause này do một ad toàn màn vừa lên hình (xem <see cref="FullscreenAdPresenceState"/>) —
+        /// lần quay lại sau nó KHÔNG phải người chơi quay lại app, nên không sinh bản tin hot.
+        /// </param>
+        public void MarkPause(long nowMillis, bool byFullscreenAd = false)
         {
             _pausedAtMillis = nowMillis;
+            _pausedByFullscreenAd = byFullscreenAd;
         }
 
         /// <summary>
@@ -97,8 +103,15 @@ namespace Falcon.Modules.Core.BigData
         /// Lần Hot (quay lại) có thời lượng nền dưới ngưỡng này thì KHÔNG log (lọc nhiễu kiểu thoát ra 2 giây
         /// copy OTP / nghe điện thoại). Cold không bao giờ bị lọc.
         /// </param>
+        /// <param name="startupMillis">
+        /// Số đo khởi động (chỉ dùng cho lần Cold). Gắn lên bản tin CHỈ KHI app chưa từng xuống nền trước
+        /// lần Cold này — OS mở process ngầm (push, prefetch) rồi người chơi mở sau hàng chục phút thì quãng
+        /// chờ bị đếm vào, ra một số dài vô nghĩa ⇒ để VẮNG (ký với loader 12/11,
+        /// <c>Request-Loader-AbsentNotZero.md</c> mục 1). Đồng hồ đơn điệu chỉ dừng khi MÁY ngủ, không dừng
+        /// khi APP bị treo ở nền, nên không tự lọc được ca này.
+        /// </param>
         /// <returns>Tham số để log, hoặc null nếu lần này bị lọc.</returns>
-        public AppOpenParam TryOpen(long nowMillis, int minBackgroundSec)
+        public AppOpenParam TryOpen(long nowMillis, int minBackgroundSec, int? startupMillis = null)
         {
             _openIndex++;
 
@@ -108,7 +121,8 @@ namespace Falcon.Modules.Core.BigData
                 var coldParam = new AppOpenParam
                 {
                     launchType = LaunchType.Cold,
-                    openIndex = _openIndex
+                    openIndex = _openIndex,
+                    startupDurationMs = _pausedAtMillis.HasValue ? null : startupMillis
                 };
                 ApplyPendingSource(coldParam, nowMillis);
                 return coldParam;
@@ -120,8 +134,16 @@ namespace Falcon.Modules.Core.BigData
                 ? (int)Math.Max(0, (nowMillis - _pausedAtMillis.Value) / 1000)
                 : null;
             _pausedAtMillis = null;
+            var byAd = _pausedByFullscreenAd;
+            _pausedByFullscreenAd = false;
 
             if (backgroundSec.HasValue && backgroundSec.Value < minBackgroundSec) return null;
+
+            // Đóng ad toàn màn ≠ quay lại app (loader đo xác nhận 11/11: nền ≈ thời lượng ad, cả Android
+            // lẫn iOS). Bỏ hẳn bản tin — vắng còn hơn một lần "quay lại" giả làm
+            // phồng resume_count và cộng thời gian xem ad vào background_sec. Ký loader 12/11
+            // (Request-Loader-AdShowSkipped.md mục 3). openIndex vẫn tăng như mọi lần bị lọc.
+            if (byAd) return null;
 
             var param = new AppOpenParam
             {

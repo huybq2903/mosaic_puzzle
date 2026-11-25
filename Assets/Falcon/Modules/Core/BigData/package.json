@@ -1,7 +1,7 @@
 {
   "name": "falcon.modules.core.bigdata",
   "displayName": "Falcon Big Data Module",
-  "version": "1.4.1",
+  "version": "1.8.1",
   "unity": "6000.0",
   "description": "Module for logging data to Falcon Big Data System",
   "author": {
@@ -13,6 +13,6 @@
     "falcon.modules.core.saveload": "1.0.8",
     "falcon.modules.core.remoteconfig": "1.1.6",
     "com.unity.nuget.newtonsoft-json": "3.2.1",
-    "falcon.helpers.devkit": "1.3.0"
+    "falcon.helpers.devkit": "1.4.0"
   }
 }

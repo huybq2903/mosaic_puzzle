@@ -6,6 +6,279 @@
 > `go_kart_race_20260914`, `go_kart_race_20260918`). Funnel (open / join / milestone / complete)
 > **đang log đúng**, không phải sửa.
 
+# 🟡 RÀ SỐ PRODUCTION 28/10 — R4 đã lên số
+
+Phía đọc số thấy Race thiếu `cycle_index`/`cycle_start_ts` trên một phần dòng, trong khi
+`cycle_end_ts` có đủ: đúng dấu vân tay của **R4** còn treo (`DeclareCycle` chỉ truyền `cycleEndTs`).
+Phần dòng **có** hai cột đó gần như chắc là phân đôi theo **bản build** — tách theo `app_version`
+để xác nhận. Nhắc lại: `state.lap` đã là "bảng thứ mấy" và đã được truyền làm `cycleIndex` cho
+funnel cũ ở `StartBoard`, nên `cycleIndex` cho live-ops gần như miễn phí; `cycleStartTs` phải xin
+server/config. SDK **không bịa** được hai cột này.
+
+# 🔁 THÊM HỢP ĐỒNG LIVE-OP — PHA 1: chỉ THÊM, không bỏ gì
+
+> Chốt 15/10/2026. Hợp đồng: `docs/design/LiveOpsEventContract.md` · Khuôn:
+> `docs/design/LiveOpsTrackingPattern.md`. SDK **BigData 1.5.0** đã có đủ API; chờ loader ký
+> `f_sdk_live_ops_data` trước khi **game ship** (up package thì không chặn).
+> **Khoá event của event này: `race`** (để trần, không tiền tố `event_`).
+>
+> **Luật của pha này: THÊM, KHÔNG BỎ.** Mọi lời gọi đang chạy giữ **nguyên 100%** — dashboard hiện
+> tại không được phép vỡ. Hai stream chạy song song tới khi dashboard mới thay thế xong.
+
+
+⚠ Event này có một chỗ đặc biệt: funnel cũ dùng `cycleId` = **bảng đấu**, còn hợp đồng mới dùng
+`cycle` = **đợt tuần** và `round` = **bảng đấu**. Hai stream mang hai nghĩa `cycle` khác nhau —
+**không sao**, vì không ai UNION hai bên. Nhưng phải ghi rõ cho data team.
+
+### [ ] L1 — THÊM: khai đợt (đợt = TUẦN, không phải bảng đấu)
+
+```csharp
+FalconBigDataController.LiveOps.DeclareCycle(
+    "race", cycleId: raceId, cycleIndex: weekIndex,
+    cycleStartTs: startMs, cycleEndTs: endMs);
+```
+
+### [ ] L2 — THÊM: bước live-ops kèm `roundId` = bảng đấu
+
+```csharp
+private void Step(string action, int? stage = null)
+{
+    FalconBigDataController.LiveOps.OnStep("race", action, stage: stage, roundId: raceBoardId);
+}
+// join / milestone(stage = chặng 1|2|3) / complete — song song với funnel cũ, giữ y nguyên funnel
+```
+
+Van lọc tính theo `(đợt, lượt, action, stage)` nên **bảng đấu thứ hai trong cùng tuần không bị
+bảng đầu nuốt** — vết sẹo cũ của event này.
+
+### [ ] L3 — THÊM: `Stamp` lên dòng level, dòng thưởng, dòng tiêu
+
+```csharp
+FalconBigDataController.LiveOps.Stamp(levelParam, "race", stage: stageIndex);
+levelParam.liveOpsRoundId = raceBoardId;
+```
+
+### [ ] L4 — Số lần thử: SDK đếm hộ, **không bỏ `race_attempt`** ở pha 1
+
+Dòng `milestone(N)` mới tự mang `level_attempts_since_prev_step` (số **lượt chơi** mở ra giữa hai
+mốc, SDK đếm theo state machine). `race_attempt` của module **giữ nguyên** cho chart cũ; pha 2 mới
+bỏ.
+
+✅ Câu **Y2** ("thua có mất tiến độ chặng không") từ nay **không ảnh hưởng số mới** — SDK đếm lượt
+chơi thật, không phụ thuộc định nghĩa "attempt" của game. Vẫn nên trả lời để đọc đúng `race_attempt`
+của chart cũ.
+
+### Giữ nguyên — KHÔNG bỏ gì ở pha 1
+
+| Thứ | Trạng thái |
+|---|---|
+| Funnel `event_race` (`cycleId` = bảng đấu), `lap`, `attempts_used` | **Giữ** |
+| `race_id`, `race_board_id` | **Giữ** (song song với `live_ops_cycle_id` / `live_ops_round_id`) |
+| `race_stage`, `race_attempt`, `race_level_pos`, `race_retry_reason` | **Giữ** |
+
+### Hai tên một giá trị
+
+| Cũ | Mới |
+|---|---|
+| `race_id` | `live_ops_cycle_id` *(⚠ chỉ bằng nhau nếu `race_id` là id ĐỢT; nếu module đang dùng nó làm id bảng đấu thì nó bằng `live_ops_round_id`)* |
+| `race_board_id` | `live_ops_round_id` |
+| `race_stage` | `live_ops_stage` |
+| `race_attempt` − 1 | `level_attempts_since_prev_step` *(hai định nghĩa khác nhau — xem L4, đừng kỳ vọng bằng nhau tuyệt đối)* |
+
+### Pha 2 — bao giờ mới được BỎ cái cũ
+
+Đủ **cả bốn** mới bỏ, và bỏ riêng cho event này:
+
+1. Dashboard mới dựng xong và **khớp số với dashboard cũ trong TRỌN một đợt** (không phải vài ngày).
+2. ~~Loader đã ký `f_sdk_live_ops_data`~~ → ✅ **ĐÃ KÝ 20/10**. Còn lại: seed mapping rule.
+3. Bỏ **đúng ranh giới đợt**. Bỏ giữa đợt là có một đợt nửa cũ nửa mới — mọi phân vị và mẫu số của
+   đợt đó hỏng mà trông vẫn hợp lý. Đây là cái bẫy lớn nhất của cả đợt chuyển.
+4. Đã ghi mốc era (phía kho đọc được từ `sdk_version` + `live_ops_event IS NOT NULL`).
+
+### Hai chỗ dễ sai khi làm pha 1
+
+- ⚠ **Gói hai đường vào MỘT hàm** của class tracking event này, đừng để call site tự gọi từng bên.
+  Sớm muộn có người thêm một mốc ở một bên và quên bên kia — lệch kiểu đó không ai thấy.
+- ⚠ **KHÔNG gọi thêm `Resource.OnEarned` để "chở ngữ cảnh live-ops"**. `Stamp` điền thêm cột vào
+  chính param đang gửi, **không sinh dòng mới**. Gọi thêm là đếm đôi tiền — đúng vết sẹo log-đôi
+  rank reward của Master League.
+
+---
+
+# ⚠ KẾT QUẢ RÀ CODE 16/10 — việc phải sửa trước khi ship
+
+> Rà bản module dev game vừa import (16/10) đối chiếu hợp đồng
+> `docs/design/LiveOpsEventContract.md` + mục 🔁 ở trên. 🔴 = làm sai số liệu, sửa trước khi ship ·
+> 🟡 = nên sửa · 🟢 = đã đúng, ghi nhận để khỏi sửa lại.
+
+**♻ RÀ LẠI 19/10** (bản dev vừa chỉnh): **R1 · R5 · R6 xong** · **R2 mình RÚT LẠI** ·
+R3 · R4 còn treo · thêm **R7 (lỗi SDK — mình đã vá)**. **20/10: R8 xong.**
+
+### [x] R1 🔴 `eligible` / `open` KHÔNG được mang `roundId` — ✅ SỬA XONG 19/10
+
+> ✅ **19/10 — xong.** `LogRaceStep` gọi `LiveOpsStep(action, null)`; bảng đấu chỉ còn ở
+> `join`/`milestone`/`complete`. ⚠ Cách tách ĐÚNG này có chạm một **lỗi SDK** làm hỏng số đo khoảng
+> cách — **mình đã vá chiều 19/10**, xem **R7**. Đừng sửa ngược lại R1.
+
+```csharp
+private static void LogRaceStep(string action, int priority)
+{
+    …
+    LiveOpsStep(action, State.boardId);   // ← eligible và open cũng bị gắn bảng đấu
+}
+```
+
+Van lọc khoá theo `(event, cycle, round, action, stage)`, nên **mỗi bảng đấu mới là van sạch lại** →
+một user có **N dòng `eligible`** trong một đợt (N = số bảng đã chơi). `eligible` là **mẫu số** của
+mọi chart tham gia, phình mẫu số thì mọi tỷ lệ tụt xuống mà trông vẫn hợp lý.
+
+Sửa: `eligible` và `open` là **của ĐỢT** → gọi `LiveOpsStep(action, boardId: null)`. Còn `join` /
+`milestone` / `complete` / `claim` gắn bảng đấu thì **đúng**, giữ nguyên.
+
+### [~] R2 🟡 Dòng level chưa `Stamp` live-ops — ❌ MÌNH RÚT LẠI 19/10
+
+> ❌ **19/10 — rút lại, đừng làm.** Rà kỹ hơn thì `DeclareGoKartRace` đăng ký
+> `FLevelManager.EVENT_BUS_LEVEL_COMPLETE/FAILED` — Race tiến bằng **level thường của game**, y như
+> Sky Path, và có thể chạy **chồng** Sky Path/Adventure cùng lúc. Khai event lên dòng level khi đó là
+> **chọn bừa một event** giữa nhiều event đang chạy — đúng thứ hợp đồng §3 cấm. Bản 16/10 mình đọc
+> nhầm Race là một level-mode riêng (như Master League), nên mới bảo copy cách của ML.
+>
+> Hệ quả phải ghi vào chart, không phải lỗi: cặp `live_ops_level_passes_*` / `live_ops_level_attempts_*`
+> **luôn rỗng** với event chạy chồng (Race, Sky Path, Adventure). Chart dùng cặp **toàn cục**
+> `level_passes_*` / `level_attempts_*` — là **chặn trên** (ván chapter chen vào cũng tính), và nói rõ
+> điều đó trên nhãn; muốn chính xác theo chặng thì đọc `race_stage` + `race_attempt` trên dòng level.
+
+`LevelStartMeta()` chỉ trả dict extras; param level không được `Stamp`, nên:
+
+- `live_ops_level_attempts_*` / `_passes_*` **rỗng** cho Race → mất thước đo chính xác, chỉ còn cặp
+  toàn cục (là **chặn trên** vì ván chapter chen vào cũng tính);
+- "win rate theo chặng" vẫn phải đọc `race_stage` thay vì cột chung.
+
+Master League đã làm đúng cách này (`Stamped(new LevelStartParamV2{…})`) — copy sang, hoặc expose
+một `LiveOpsRef` để phía game áp vào param level.
+
+### [ ] R3 🟡 Mã đợt lấy từ ngày **KẾT THÚC** — ⏳ CÒN TREO 19/10
+
+> ⏳ **19/10 — chưa làm.** `RaceId` vẫn `GetTimeEnd()`.
+
+```csharp
+RACE_ID_PREFIX + GetTimeEnd().ToString(RACE_ID_FORMAT)
+```
+
+Giữ format cũ để khớp era `go_kart_race_2026xxxx` là hợp lý, nhưng phải biết rủi ro: **ops gia hạn
+đợt là mã đợt đổi GIỮA đợt** → một đợt tách thành hai `cycle_id`, van lọc sạch lại (`eligible` bắn
+lại), phân vị tính trên hai nửa. Hướng sửa, theo thứ tự ưu tiên: xin **id đợt từ server**; không có
+thì dùng **ngày MỞ** (`GetTimeStart`) thay vì ngày kết thúc.
+
+### [ ] R4 🟡 `DeclareCycle` thiếu `cycleIndex` và `cycleStartTs` — ⏳ CÒN TREO 19/10
+
+> ⏳ **19/10 — chưa làm.** `DeclareCycle` vẫn chỉ truyền `cycleEndTs`. Lưu ý: `state.lap` đã là
+> "đợt/bảng thứ mấy" và đã được truyền làm `cycleIndex` cho **funnel cũ** ở `StartBoard` — nên
+> `cycleIndex` cho live-ops gần như miễn phí, chỉ thiếu `cycleStartTs` là phải xin server/config.
+
+Chỉ truyền `cycleEndTs`. Thiếu `cycleIndex` thì không sort được đợt bằng số (phải parse tên);
+thiếu `cycleStartTs` thì không có mốc mở đợt.
+
+### [x] R5 🟡 Việc **Y1** chưa làm — ✅ SỬA XONG 19/10
+
+> ✅ **19/10 — xong.** `KEY_STREAK_POS = "race_level_pos"`.
+
+`KEY_STREAK_POS` vẫn là `race_streak_pos`. Theo thiết kế 09/10 (bỏ yêu cầu thắng liên tiếp) nó đổi
+nghĩa thành "ván thứ mấy trong chặng" → đổi tên thành **`race_level_pos`**. Đổi bây giờ còn miễn
+phí; để extras lên dữ liệu rồi thì thành era.
+
+### [x] R6 🟡 Pin `package.json` sai — ✅ SỬA XONG 19/10
+
+> ✅ **19/10 — xong.** `falcon.modules.core.bigdata: 1.5.1`.
+
+`bigdata: 1.3.9` → **≥ 1.5.1** (code gọi `LiveOps.*`, `LiveOpsRef`).
+
+### [x] R7 🔴 LỖI CỦA SDK, không phải của module — sổ mốc bị **reset** khi hai thân phận bản ghi xen nhau — ✅ ĐÃ VÁ 19/10
+
+> ✅ **19/10 (chiều) — mình vá xong ở SDK.** `LiveOpsLogService` giờ giữ **hai ô sổ mốc** mỗi event
+> (đợt đang chạy + đợt vừa đóng) và **lượt rời khỏi nhãn ô** (vẫn nằm trong khoá van lọc). Module
+> **không phải sửa gì**. Hai thứ phía đọc số cần biết: `*_since_enter` từ nay luôn là *"từ lúc vào
+> ĐỢT"* (kể cả Race — muốn "từ lúc vào bảng này" thì đọc `*_since_prev_step`), và dòng của một đợt
+> quá cũ (đã mất ô) gửi các field khoảng cách **vắng mặt**. Lên cùng bản **BigData 1.5.2**.
+>
+> ⚠ **Việc của module: nâng pin `falcon.modules.core.bigdata` lên `1.5.2`** (đang là `1.5.1`) —
+> bản vá nằm ở 1.5.2, pin cũ thì vẫn chạy code cũ.
+
+Van lọc chỉ chặn bước **lặp lại**. Bước **lần đầu** nào có `(đợt, lượt)` khác bản ghi đang lưu thì
+`EnsureCycleRecord` **reset cả bản ghi**: `live_ops_enter_ts` = bây giờ, năm cặp mốc về 0, và dòng đó
+được coi là "bước đầu đợt".
+
+Sau khi **R1** được sửa đúng, `eligible`/`open` mang lượt **rỗng** còn
+`join`/`milestone`/`complete`/`claim` mang lượt thật → hai thân phận xen nhau trong cùng một đợt:
+
+1. `eligible(đợt, "")` → tạo bản ghi, `enter_ts` = lúc đủ điều kiện.
+2. `join(đợt, lượt 1)` → lượt khác → **reset** → mất đúng thứ đáng giá nhất: khoảng cách
+   **eligible → join** (bao lâu kể từ lúc mở cửa thì user mới chịu vào).
+3. Nếu phiên nào `eligible` bắn **sau** `join` (lúc init config chưa về, data mới gọi lại
+   `OnEligible`) thì còn reset thêm một nhịp nữa, và dòng `milestone` ngay sau đó ship
+   `*_since_enter = 0` + `*_since_prev_step` **vắng** — đúng con số chính của thiết kế.
+
+Lỗi nằm ở `LiveOpsLogService` của **module BigData**, không phải ở module event — và cách sửa cũng ở
+SDK, hai luật:
+
+| Luật | Nội dung |
+|---|---|
+| **Lượt rỗng** | Bước không mang `roundId` (`eligible`/`open`) **không được** đổi thân phận lượt của bản ghi, nên không reset |
+| **Đợt đã đóng** | Dòng mang đợt **khác bản khai hiện tại** là **chỉ đọc**: không reset sổ, không mượn lịch (`cycle_start_ts`/`cycle_end_ts`) của đợt đang chạy, và các field khoảng cách **vắng mặt** thay vì bịa số |
+
+Vá ở **BigData 1.5.2**. Module **không phải làm gì** — và **đừng** sửa ngược lại **R1**.
+
+### [x] R8 🟡 Dòng level **RESULT** không mang meta của race — ✅ SỬA XONG 20/10 (phương án B)
+
+> ✅ **20/10 — xong, và làm đúng chỗ khó.** Hai điểm mình soi thì cả hai đều đúng:
+>
+> **1. Tác dụng phụ chỉ còn ở `start`.** Họ tách `LevelMeta()` thành builder **thuần**;
+> `LevelStartMeta()` = builder + tiêu thụ `race_retry_reason`, còn `LevelResultMeta()` = builder
+> trần. Nếu dòng result cũng tiêu thụ thì lý do retry của lượt sau biến mất im lặng.
+>
+> **2. Dựng meta TRƯỚC khi vào `FLevelManager.OnLevelResult`.** `DeclareGoKartRace` đăng ký
+> `EVENT_BUS_LEVEL_FAILED`, event đó bắn **bên trong** `OnLevelResult` → `OnRoundResult` →
+> `MarkRetry` → `attempt++`. Dựng sau là `race_attempt` trên dòng result thành lượt **kế tiếp**.
+> Thứ tự đánh giá tham số của C# đảm bảo điều này, và comment của họ ghi đúng lý do — đừng ai
+> "dọn" lại thành gán biến sau khi gọi.
+>
+> Không va key: race dùng `race_*`, Sky Path dùng `path_*`, và `MergeMeta` cho bên sau thắng.
+>
+> ⚪ **Một ca lệch nhãn nhỏ, ghi để phía đọc số khỏi giật mình**: `OnStageLost` (bot thắng chặng)
+> cũng gọi `MarkRetry`. Nếu nó xảy ra **giữa** mốc start và mốc result của cùng một ván thì hai dòng
+> mang `race_attempt` lệch 1. Join theo `play_turn_id` vẫn đúng ván; chỉ cần biết khi so hai dòng.
+
+`DefaultGamePlayMode` nối meta race vào **`OnLevelStart`** (qua `MergeRaceMeta`, có cổng
+`DeclareGoKartRace.IsEnable()` — đúng), nhưng **`OnLevelResult` chỉ merge meta của Sky Path**. Mà
+`GoKartRaceTracking` cũng **không có** hàm `LevelResultMeta`, nên không có gì để merge.
+
+Hệ quả: `race_stage` / `race_attempt` / `race_level_pos` **chỉ có trên dòng start**. Chart nào lọc
+trên dòng **pass/fail** theo mấy key đó sẽ ra **rỗng** — mà "win rate theo chặng" thì đúng là phải
+đọc dòng kết quả.
+
+Hai cách, chọn một:
+
+| Cách | Việc |
+|---|---|
+| **A — phía đọc nối** | Giữ nguyên code, nhưng **ghi vào luật đọc**: join dòng start ↔ dòng result theo `play_turn_id` để lấy `race_stage`. Không sửa gì, nhưng mọi người đọc số phải biết |
+| **B — gắn luôn** | Thêm `GoKartRaceTracking.LevelResultMeta()` (trả cùng bộ key, KHÔNG tiêu thụ `race_retry_reason` — chỗ đó chỉ được tiêu thụ một lần ở start) rồi merge vào `OnLevelResult` |
+
+Mình nghiêng **B**: một dòng ở game + một hàm ở module, đổi lại là mọi chart đọc trực tiếp được.
+Nhưng nếu chọn A thì phải nói với data team ngay, vì họ sẽ dựng chart trên dòng result trước.
+
+### 🟢 Đã đúng — đừng sửa lại
+
+- **`cycle` = đợt tuần, `round` = bảng đấu** — đúng hợp đồng, và đây là chỗ khó nhất của event này.
+- Funnel cũ **vẫn giữ `cycleId = boardId`** → pha 1 đúng chuẩn: hai stream hai nghĩa, chart cũ không
+  vỡ.
+- `Ui.OnImpression/OnClicked` truyền `LiveOpsRef` → bốn giá trị vào **khoá gộp cụm**, hai đợt không
+  bị nén một dòng.
+- `milestone` mang stage = chặng, `complete` ở chặng cuối.
+- Dòng thưởng có `liveOpsRoundId` + `Stamp(stage)` + `exchangeId` riêng.
+- Prefix `race_*` đã xong (việc **A1**).
+
+---
+
 # ✅ TODO
 
 ## 0. 🔴 LÀM NGAY — nút event có thể đang bị giấu (mất người tham gia thật)
@@ -25,6 +298,35 @@
 Trong **riêng đợt 0918**, chia tỉ lệ thấy-nút / tham gia theo bản app 1.0.5 và 1.0.6. User 1.0.5
 cũng tụt → lỗi config (X1). Chỉ 1.0.6 tụt → lỗi bản app.
 
+## 0b. Cập nhật thiết kế 09/10 — 2 việc
+
+GD đổi luật: **vẫn 3 chặng**, nhưng **số level mỗi chặng đổi**, và **user không cần thắng liên tiếp**
+để thắng event.
+
+### [ ] Y1 — Đổi tên `race_streak_pos` → `race_level_pos`
+
+Bỏ luật thắng-liên-tiếp thì trường này không còn là "ván thứ mấy trong chuỗi thắng" mà là **"ván thứ
+mấy trong chặng"**. Giữ tên cũ là để một cái tên sai trong kho suốt đời.
+
+Đổi **miễn phí, không tạo đời dữ liệu**, vì extras trên log level **chưa lên dữ liệu thật** (đúng
+việc G1 còn treo). Sửa hằng trong `GoKartRaceTracking`:
+
+```csharp
+public const string KEY_LEVEL_POS = "race_level_pos";   // cũ: KEY_STREAK_POS = "race_streak_pos"
+```
+
+### [ ] Y2 — Trả lời: thua một level thì có MẤT tiến độ chặng?
+
+Câu này quyết định hai trường `race_attempt` và `race_retry_reason` còn nghĩa hay không:
+
+| Trả lời | Việc phải làm |
+|---|---|
+| **Mất tiến độ** (phải làm lại chặng từ đầu) | Giữ nguyên cả hai trường. `race_attempt` = lần thử thứ mấy của chặng, `race_retry_reason` = vì sao phải làm lại |
+| **Không mất** (chỉ chơi lại đúng ván đó) | **Bỏ cả hai trường** — "retry chặng" không còn tồn tại, giữ lại là hai cột luôn bằng 1 và một cột luôn trống |
+
+**Không cần sửa gì cho các con số:** số level mỗi chặng là **config**, log đã ghi vị trí ván thật và
+`race_attempts_used`. Ngưỡng mới thì phân bố trên chart tự phản ánh.
+
 ## A. Module Go-Kart — owner module làm
 
 File chính: `Scripts/Runtime/Analytic/GoKartRaceTracking.cs`
@@ -38,7 +340,7 @@ public const string KEY_LAP           = "race_lap";            // cũ: "lap"
 public const string KEY_STAGE         = "race_stage";          // cũ: "stage"
 public const string KEY_ATTEMPT       = "race_attempt";        // cũ: "attempt"
 public const string KEY_ATTEMPTS_USED = "race_attempts_used";  // cũ: "attempts_used"
-public const string KEY_STREAK_POS    = "race_streak_pos";     // cũ: "streak_pos"
+public const string KEY_LEVEL_POS     = "race_level_pos";     // cũ: KEY_STREAK_POS = "streak_pos"
 public const string KEY_RETRY_REASON  = "race_retry_reason";   // cũ: "retry_reason"
 ```
 
@@ -126,7 +428,7 @@ public void StartRace()
 }
 ```
 
-**Kiểm:** mở app, popup tự bật → cụm `f_sdk_ui_impression` có `surfaceId = race_event_popup`.
+**Kiểm:** mở app, popup tự bật → cụm `f_sdk_ui_exposure` có `surfaceId = race_event_popup`, `impressionCount ≥ 1`.
 
 ### [ ] A5 — Thưởng đầu mùa kèm thông tin event
 
@@ -195,7 +497,7 @@ levelManager.OnLevelStart(extraMeta: meta);
 - ⚠ Gọi **đúng một lần** mỗi ván (hàm "tiêu" lý do retry sau lần gọi đầu).
 
 **Kiểm:** đang đua, bắt đầu ván → dòng level Start có `race_id`, `race_board_id`, `race_stage`,
-`race_attempt`, `race_streak_pos` (ván đầu sau khi thua thêm `race_retry_reason`).
+`race_attempt`, `race_level_pos` (ván đầu sau khi thua thêm `race_retry_reason`).
 
 ### [ ] G2 — Chuyển tiếp thông tin thưởng
 
@@ -269,7 +571,7 @@ kéo dài qua lúc đổi đợt có thể dán nhầm đợt. Data đã kiểm:
 
 | Log | Key cũ trong module | Key mới |
 |---|---|---|
-| Level Start (phẳng) | `stage`, `attempt`, `streak_pos`, `retry_reason` | `race_stage`, `race_attempt`, `race_streak_pos`, `race_retry_reason` |
+| Level Start (phẳng) | `stage`, `attempt`, `streak_pos`, `retry_reason` | `race_stage`, `race_attempt`, `race_level_pos`, `race_retry_reason` |
 | Funnel milestone/complete (phẳng) | `lap`, `attempts_used` | `race_lap`, `race_attempts_used` |
 | Resource `detail` | `board_id`, `stage`, `lap` | `race_board_id`, `race_stage`, `race_lap` |
 
@@ -293,7 +595,7 @@ từng metric.
 | `race_lap` | 1, 2, 3… mỗi vòng chơi lại trong cùng event | Đi extraMeta cùng board |
 | `race_stage` | 1 / 2 / 3 | Trục chính của các metric |
 | `race_attempt` | Bắt đầu là 1; streak của chặng bị reset (thua level / quit / bot về nhất) → +1 | Nguồn metric Retry |
-| `race_streak_pos` | Ván thứ mấy trong chuỗi win liên tiếp (1..3/5/7) | Nguồn tuning bot |
+| `race_level_pos` | Ván thứ mấy **trong chặng** (1, 2, 3…) | Biết user gãy ở ván nào của chặng |
 
 ### Bảng tra NHANH: khoảnh khắc nào → gọi gì
 
@@ -416,7 +718,7 @@ FalconBigDataController.Level.OnStart(new LevelStartParamV2
         ["race_board_id"] = boardId,
         ["race_stage"]    = 2,            // chặng 1/2/3
         ["race_attempt"]  = 4,            // lần thử thứ mấy của chặng này (bắt đầu = 1)
-        ["race_streak_pos"] = 3,            // ván thứ 3 trong chuỗi 5 ván phải win liên tiếp
+        ["race_level_pos"]  = 3,           // ván thứ 3 của chặng này
         ["race_retry_reason"] = "bot_won"     // CHỈ điền ở ván ĐẦU của attempt ≥ 2:
                                           // "level_fail" / "quit" / "bot_won" — vì sao phải làm lại.
                                           // Attempt 1 hoặc ván giữa chuỗi: BỎ TRỐNG key này.
@@ -430,7 +732,7 @@ FalconBigDataController.Level.OnFail(failReason: LevelFailReason.Quit);
 
 Server đọc ra từ đúng stream này:
 - **Retry chặng N** (metric 5) = `max(race_attempt) − 1` per board — tổng + phân vị.
-- **Bot dễ/khó** (concern 1) = win-rate và duration per (`race_stage`, `race_streak_pos`) — gãy ở khúc nào
+- **Bot dễ/khó** (concern 1) = win-rate và duration per (`race_stage`, `race_level_pos`) — gãy ở khúc nào
   của chuỗi; tỷ lệ `race_retry_reason = "bot_won"` = bot cướp chặng bao nhiêu phần.
 - **Drop vì bí** (concern 3) = `max(race_attempt)` cuối cùng trước khi user biến mất khỏi event —
   phân vị ra ngưỡng "retry thứ mấy thì người ta chán".
@@ -509,7 +811,7 @@ bán trong UI event thì `where` của `Iap.OnStarted` đặt placement event.
 ### 7. Data team đọc gì — đối chiếu đủ 8 metric
 
 ```
-1. Impression/CTR ngày      = f_sdk_ui_impression: sum(count|click) / sum(count|impression)
+1. Impression/CTR ngày      = f_sdk_ui_exposure: sum(click_count) / sum(impression_count)   (f_sdk_ui_impression ≤ 1.7.0)
                               per surfaceId per ngày; grain đã-xem/chưa = distinct(open)
 2. Tham gia + %DAU          = distinct user có Join / DAU
 3. User pass mốc 1/2/3      = distinct user có Milestone priority N (10 lần vẫn 1 user)

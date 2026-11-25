@@ -92,7 +92,9 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
             catch (Exception e)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(e);
+#endif
             }
         }
 
@@ -134,7 +136,9 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
             catch (Exception e)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(e);
+#endif
             }
         }
 
@@ -177,7 +181,9 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
             catch (Exception e)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(e);
+#endif
             }
         }
 
@@ -214,7 +220,9 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
             }
             catch (Exception e)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError(e);
+#endif
             }
         }
 

@@ -30,14 +30,37 @@ namespace Falcon.Modules.Core.BigData
         private readonly ITimeRepository _timeRepository;
         private readonly LogScheduleService _logScheduleService;
         private readonly AnalyticConfigService _configService;
+        private readonly FullscreenAdPresence _fullscreenAdPresence;
+        private readonly PerfScreenLogService _perfScreenLogService;
+        private readonly IDataPool _dataPool;
+        private readonly TurnLedgerService _turnLedger;
+        private readonly BatteryLogService _batteryLogService;
+        private readonly SettingLogService _settingLogService;
+        private readonly ConsentAccountService _consentAccountService;
+        private readonly DeviceSignalService _deviceSignalService;
+        private readonly PermissionAutoReadService _permissionAutoRead;
+        private const string GRAPHICS_QUALITY_KEY = "falcon.bigdata.app_open.graphics_quality";
 
         public AppOpenLogService(
             ITimeRepository timeRepository, LogScheduleService logScheduleService,
-            AnalyticConfigService configService)
+            AnalyticConfigService configService, FullscreenAdPresence fullscreenAdPresence,
+            PerfScreenLogService perfScreenLogService, IDataPool dataPool, TurnLedgerService turnLedger,
+            BatteryLogService batteryLogService, SettingLogService settingLogService,
+            ConsentAccountService consentAccountService, DeviceSignalService deviceSignalService,
+            PermissionAutoReadService permissionAutoRead)
         {
+            _permissionAutoRead = permissionAutoRead;
+            _deviceSignalService = deviceSignalService;
+            _consentAccountService = consentAccountService;
+            _batteryLogService = batteryLogService;
+            _settingLogService = settingLogService;
+            _turnLedger = turnLedger;
+            _perfScreenLogService = perfScreenLogService;
+            _dataPool = dataPool;
             _timeRepository = timeRepository;
             _logScheduleService = logScheduleService;
             _configService = configService;
+            _fullscreenAdPresence = fullscreenAdPresence;
         }
 
         public Task Init(CancellationToken cancellationToken = default)
@@ -53,7 +76,10 @@ namespace Falcon.Modules.Core.BigData
 
         public void OnPostStop()
         {
-            lock (_lock) _state.MarkPause(_timeRepository.CurrentTimeMillis);
+            // Hỏi NGAY lúc pause: ad toàn màn vừa lên hình thì lần quay lại sau nó là đóng ad, không
+            // phải người chơi quay lại app.
+            var byAd = _fullscreenAdPresence.IsAdOnset();
+            lock (_lock) _state.MarkPause(_timeRepository.CurrentTimeMillis, byAd);
         }
 
         /// <summary>
@@ -76,15 +102,68 @@ namespace Falcon.Modules.Core.BigData
                     "RuntimeInitializeOnLoadMethod cho ca Cold, ngay trong callback nhận notification cho ca Hot.");
         }
 
+        /// <summary>Game khai mức đồ hoạ đang chọn (hợp đồng đợt 3 B1(c)) — null để gỡ (game bỏ tính năng chỉnh đồ hoạ).</summary>
+        public void SetGraphicsQuality(string quality)
+        {
+            _dataPool.Compute<string>(GRAPHICS_QUALITY_KEY, _ => string.IsNullOrEmpty(quality) ? null : quality);
+        }
+
+        /// <summary>Main thread (Init / OnPreContinue) — đọc được API Unity.</summary>
+        private void ApplyDisplay(AppOpenParam param)
+        {
+            param.perfTargetFps = UnityEngine.Application.targetFrameRate;
+            _perfScreenLogService.NoteTargetFpsAtOpen(param.perfTargetFps.Value);
+            var hz = (float)UnityEngine.Screen.currentResolution.refreshRateRatio.value;
+            if (hz > 0 && !float.IsNaN(hz) && !float.IsInfinity(hz)) param.displayRefreshHz = (float)System.Math.Round(hz, 1);
+            param.graphicsQuality = _dataPool.GetOrDefault<string>(GRAPHICS_QUALITY_KEY, null);
+
+            var battery = _batteryLogService.ReadNow();
+            param.batteryPct = battery.Pct;
+            param.batteryCharging = battery.Charging;
+            param.batteryPlug = battery.Plug;
+            param.batteryTempC = battery.TempC;
+
+            // Đợt 2 (native, Devkit): vắng ở Editor / nền tảng không có
+            var audio = _deviceSignalService.ReadAudioNow();
+            param.deviceMediaVolumePct = audio?.VolumePct;
+            param.deviceRingerMode = audio?.Ringer;
+            param.audioOutput = audio?.Output;
+            var display = _deviceSignalService.Enabled ? DeviceSignals.Display() : null;
+            param.deviceFontScale = display?.FontScale;
+            param.deviceBoldText = display?.BoldText;
+            param.deviceReduceMotion = display?.ReduceMotion;
+            param.deviceStorageFreeBucket = display?.StorageFreeBucket;
+            // iOS: quyền thông báo đọc bất đồng bộ — lần mở đầu có thể vắng (không đoán)
+            if (_deviceSignalService.Enabled) (param.permPushStatus, param.permAttStatus) = _permissionAutoRead.ReadNow();
+
+            var settings = _settingLogService.Snapshot();
+            param.settingSound = settings.CurrentSound;
+            param.settingMusic = settings.CurrentMusic;
+            param.settingHaptic = settings.CurrentHaptic;
+            param.settingIsDefault = settings.IsDefault();
+            param.settingLanguage = settings.language;
+            param.linkedProviders = _consentAccountService.LinkedProvidersWire();
+
+            var caps = _turnLedger.Caps;
+            if (caps == null) return;
+            param.capBusy = caps.busy;
+            param.capActions = caps.actions;
+            param.capIneffectiveTap = caps.ineffectiveTap;
+            param.capSpeed = caps.speed;
+            param.capScreen = caps.screen;
+        }
+
         private void LogOpen()
         {
             AppOpenParam param;
+            // Số đo khởi động chỉ Cold mới dùng (Hot là quay lại foreground, không có khởi động nào để
+            // đo); state quyết có gắn hay không — vắng nếu app từng xuống nền trước lần Cold.
             lock (_lock)
-                param = _state.TryOpen(_timeRepository.CurrentTimeMillis, _configService.AppOpenMinBackgroundSec);
+                param = _state.TryOpen(_timeRepository.CurrentTimeMillis, _configService.AppOpenMinBackgroundSec,
+                    StartupClock.ElapsedMillis);
             if (param == null) return;
             param.networkType = NetworkTypeExtensions.Current();
-            // Chỉ Cold mới có nghĩa: Hot là quay lại foreground, không có khởi động nào để đo
-            if (param.launchType == LaunchType.Cold) param.startupDurationMs = StartupClock.ElapsedMillis;
+            ApplyDisplay(param);
 
             // Gọi được ngay cả trong Init: IInit chạy theo DependencyOrder mà service này phụ thuộc
             // LogScheduleService → LogDecorService → BaseLogDecorService → FCentralUserParamService

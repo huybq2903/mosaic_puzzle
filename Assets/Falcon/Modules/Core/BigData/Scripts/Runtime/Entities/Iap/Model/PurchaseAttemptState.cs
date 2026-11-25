@@ -32,6 +32,10 @@ namespace Falcon.Modules.Core.BigData
     /// "start cụt đuôi" — chính là số đo abandonment, chấp nhận theo bẫy (2) của §D4.
     /// <br/>Pure class — không IO/DI/time. Thread-safety do <see cref="PurchaseAttemptService"/>
     /// lo (bên ghi là UI game, bên đọc là callback billing của Unity IAP).
+    /// <br/>Dòng FAIL thừa hưởng TOÀN BỘ ngữ cảnh của lượt đang mở — <c>extraMeta</c> cộng cả bảy
+    /// field ngữ cảnh (bốn <c>liveOps*</c>, ba <c>feature*</c>) — vì <see cref="FIapApi.OnFailed"/>
+    /// cố ý không nhận param, nên nếu state không nhớ thì không ai điền được cho nhánh đó. Bảy field
+    /// đó chép bằng <see cref="ALiveOpsParam.CopyContextFrom"/>, KHÔNG liệt kê tay ở đây.
     /// </summary>
     public class PurchaseAttemptState
     {
@@ -41,6 +45,21 @@ namespace Falcon.Modules.Core.BigData
         private decimal? _localizedPrice;
         private string _isoCurrencyCode;
         private Dictionary<string, object> _extraMeta;
+
+        // CẢ HAI trục ngữ cảnh của lượt đang mở, giữ thành MỘT ảnh chụp. Giữ ở đây vì dòng FAIL
+        // do SDK dựng lại (FIapApi.OnFailed cố ý không nhận param) nên không ai khác điền được
+        // cho nó: thiếu thì phễu mua TRONG event / TRONG tính năng lệch đúng nhánh thất bại —
+        // `started` gắn ngữ cảnh, `failed` rơi ra ngoài — và sai theo chiều "trông như không ai
+        // thất bại" (rà 19/10, Endless Treasure R2). Trục tính năng còn dễ dính hơn trục event
+        // vì tính năng LUÔN BẬT, không đợi đợt nào.
+        // 🔴 Là MỘT ref chứ không phải 7 field rời (gộp 05/11): liệt kê tay bảy field ở đây là
+        // chỗ mục thứ hai mỗi lần lớp nền mọc field — nay chép bằng ALiveOpsParam.CopyContextFrom,
+        // chỗ duy nhất giữ danh sách đó.
+        // ⚠ Ref này là của RIÊNG state, không giữ param của caller: game sửa param sau khi gọi
+        // OnStarted thì ảnh chụp không được đổi theo.
+        // Dòng `purchased` KHÔNG đi đường này (TryAttributeSuccess chỉ trả id): param của nó do
+        // game truyền nên game tự đóng dấu — y khuôn trục live-op, không chở hộ.
+        private LiveOpsRef _context;
 
         /// <summary>Id của lượt mua ĐANG mở (null nếu không có).</summary>
         public string OpenAttemptId => _attemptId;
@@ -74,6 +93,8 @@ namespace Falcon.Modules.Core.BigData
             _localizedPrice = param.localizedPrice;
             _isoCurrencyCode = param.isoCurrencyCode;
             _extraMeta = param.extraMeta;
+            _context = new LiveOpsRef();
+            _context.CopyContextFrom(param);
 
             return (_attemptId, replaced);
         }
@@ -98,6 +119,8 @@ namespace Falcon.Modules.Core.BigData
                 extraMeta = _extraMeta,
                 failReason = reason
             };
+            param.CopyContextFrom(_context);
+
             var attemptId = _attemptId;
             Clear();
             return (param, attemptId);
@@ -126,6 +149,7 @@ namespace Falcon.Modules.Core.BigData
             _localizedPrice = null;
             _isoCurrencyCode = null;
             _extraMeta = null;
+            _context = null;
         }
     }
 }

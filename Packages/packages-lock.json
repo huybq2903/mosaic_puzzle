@@ -484,13 +484,6 @@
       "dependencies": {},
       "hash": "b8f04eaea48c8a23ccd7b3ec628761270e9f6979"
     },
-    "deszz.imui": {
-      "version": "https://github.com/vape/Imui.git",
-      "depth": 0,
-      "source": "git",
-      "dependencies": {},
-      "hash": "1b8c977c8e03764d07232577c4920e7dc961cac9"
-    },
     "io.github.gkngkc.unity-standalone-file-browser": {
       "version": "1.3.4",
       "depth": 0,

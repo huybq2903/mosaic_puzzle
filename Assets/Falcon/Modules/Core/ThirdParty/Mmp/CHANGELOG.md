@@ -1,4 +1,10 @@
 ﻿### CHANGELOG
+# 1.5.3
+- rào `Debug.Log` / `LogWarning` / `LogError` bằng `#if ENABLE_DEBUG_LOG`
+
+# 1.5.2
+- update param install time
+
 # 1.5.1
 - fix conversion data
 

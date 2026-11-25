@@ -35,6 +35,25 @@ namespace Falcon.Modules.Core.BigData
             this.platform = platform;
         }
 
+        private DataWrapper(string data, long clientSendTime, string @event, string packageName, string platform,
+            bool quiet)
+        {
+            this.data = data;
+            this.clientSendTime = clientSendTime;
+            this.@event = @event;
+            this.packageName = packageName;
+            this.platform = platform;
+        }
+
+        /// <summary>
+        /// Dựng wrapper mà KHÔNG ghi log (đường gửi khẩn S2: chạy trên luồng canh lúc main thread có thể đang đứng — không
+        /// đụng logger / API Unity). Envelope y hệt hàng đợi thường.
+        /// </summary>
+        public static DataWrapper Quiet(string data, long clientSendTime, string @event, string packageName, string platform)
+        {
+            return new DataWrapper(data, clientSendTime, @event, packageName, platform, true);
+        }
+
         public DataWrapper(Dictionary<string, object> data, long clientSendTime, string @event, string packageName,
             string platform) : this(data.ToJson(), clientSendTime, @event, packageName, platform)
         {

@@ -112,7 +112,7 @@ Lớp này bao bọc `HttpResponseMessage` từ `System.Net.Http` và cung cấp
 * **Phương thức "Success"**:
     * `SuccessStrBody()`, `SuccessBytesBody()`, `SuccessStreamBody()`: Đọc body chỉ khi yêu cầu thành công.
     * `SuccessObj<T>()`: Đọc body dưới dạng chuỗi, sau đó chuyển đổi (deserialize) thành đối tượng `T` (thường dùng cho JSON).
-* **`EnsureSuccess()`**: Phương thức nội bộ được gọi bởi các phương thức "Success" để kiểm tra xem phản hồi có thành công hay không. Nếu không, nó sẽ ném `InvalidOperationException` kèm theo mã trạng thái và nội dung body lỗi (nếu có) để hỗ trợ debug.
+* **`EnsureSuccess()`**: Phương thức nội bộ được gọi bởi các phương thức "Success" để kiểm tra xem phản hồi có thành công hay không. Nếu không, nó sẽ ném `HttpRequestException` với message dạng `<tên mã>:<body>` (ví dụ `NotFound:Cdn location ...`) để hỗ trợ debug.
 * **`Close()`**: Giải phóng tài nguyên của `HttpResponseMessage` underlying.
 
 ---
@@ -191,7 +191,7 @@ public class HttpExample : MonoBehaviour
             var result = await response.SuccessObj<Dictionary<string, object>>();
             Debug.Log($"POST JSON Success! Status: {response.Status}\nCreated Post ID: {result["id"]}");
         }
-        catch (InvalidOperationException ioe) // Bắt lỗi từ EnsureSuccess()
+        catch (HttpRequestException ioe) // Bắt lỗi từ EnsureSuccess()
         {
             Debug.LogError($"POST JSON Failed (Status Error): {ioe.Message}");
         }

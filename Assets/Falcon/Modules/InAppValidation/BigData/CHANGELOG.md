@@ -1,5 +1,8 @@
-## 1.0.5
-Nối phễu checkout BigData 1.3.2 (§D4): bắn Iap.OnStarted lúc mở billing flow, Iap.OnFailed lúc billing lỗi/huỷ (map PurchaseFailureReason sang IapPurchaseFailReason), Iap.OnFailed(Pending, transactionId) khi Google trả giao dịch treo. Log mua thành công chuyển từ new FInAppLog(param).Send() sang Iap.OnPurchased(param) - cùng event id, wire không đổi, SDK tự đóng purchaseAttemptId/offerImpressionId
+## 1.0.6
+Dòng IAP started/failed mang đủ trục tính năng (feature, featureInstanceId, featureStage):
+ApplyLiveOps chép ngữ cảnh qua ALiveOpsParam.CopyContextFrom thay vì liệt kê tay 4 field.
+Nâng pin falcon.modules.core.bigdata 1.1.8 -> 1.7.0 (CopyContextFrom có từ 1.6.0; pin cũ còn thấp hơn ALiveOpsParam/LiveOpsRef mà module đang dùng).
+API công khai không đổi.
 ----------------------------------
 
 

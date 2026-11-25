@@ -1,4 +1,13 @@
 ﻿# CHANGE LOG
+# 1.3.3
++ `LogFsn` nhận thêm `placement`, gửi `ad_placement` trong `ad_impression`
+
+# 1.3.2
++ rào Debug.Log / LogWarning / LogError bằng #if ENABLE_DEBUG_LOG
+
+# 1.3.1
++ thêm log number
+
 # 1.3.0
 + thêm log fsn
 

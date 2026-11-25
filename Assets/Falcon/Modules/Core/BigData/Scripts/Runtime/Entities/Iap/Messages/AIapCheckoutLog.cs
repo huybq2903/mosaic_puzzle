@@ -17,7 +17,7 @@ namespace Falcon.Modules.Core.BigData
     /// không set — cùng lý do với <see cref="AAdLog.adViewId"/>.
     /// </summary>
     [Serializable]
-    public abstract class AIapCheckoutLog : AFalconLog
+    public abstract class AIapCheckoutLog : AFalconLog, IPerfPackCarrier
     {
         /// <summary>
         /// Id của lượt mua này — SDK sinh lúc mở billing flow rồi đóng dấu lên cả nhánh thất bại

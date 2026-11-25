@@ -28,8 +28,8 @@ namespace Falcon.Modules.Core.BigData
         CentralKeyRejected,
 
         /// <summary>
-        /// Trùng tên một CỘT HỢP ĐỒNG (§H1, so theo dạng chuẩn hoá nên <c>win_streak</c> cũng bắt
-        /// được <c>winStreak</c>). Cho qua thì key bị cột thật đè trên event có cột đó và chỉ xuất
+        /// Trùng tên một CỘT HỢP ĐỒNG (§H1, so theo dạng chuẩn hoá nên <c>fail_count</c> cũng bắt
+        /// được <c>failCount</c>). Cho qua thì key bị cột thật đè trên event có cột đó và chỉ xuất
         /// hiện trên phần còn lại — nửa có nửa không, tệ hơn không có.
         /// </summary>
         WireKeyRejected,

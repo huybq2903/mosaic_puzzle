@@ -96,5 +96,31 @@ namespace Falcon.Modules.Core.BigData.Tests
             Assert.IsNull(second.FrameDropCount);
             Assert.IsNull(second.MemoryWarningCount);
         }
+
+        [Test]
+        public void FirstFrameAfterResume_IsNotCountedAsDrop()
+        {
+            // Hợp đồng đợt 3 B1: nền < 2 s thì khung đầu sau resume rơi vào 0,1–2 s — trước đây bị đếm oan.
+            var state = new PerfSampleState();
+            state.AddFrame(FRAME_60);
+            state.MarkResumed();
+            state.AddFrame(0.8f);
+            state.AddFrame(FRAME_60);
+
+            var summary = state.TakeAndReset();
+            Assert.AreEqual(0, summary.FrameDropCount);
+            Assert.AreEqual(60f, summary.AvgFps.Value, 0.01f, "khung bị bỏ cũng không vào fps");
+        }
+
+        [Test]
+        public void OnlyTheFirstFrameAfterResume_IsSkipped()
+        {
+            var state = new PerfSampleState();
+            state.MarkResumed();
+            state.AddFrame(0.5f);
+            state.AddFrame(0.3f);
+
+            Assert.AreEqual(1, state.TakeAndReset().FrameDropCount);
+        }
     }
 }

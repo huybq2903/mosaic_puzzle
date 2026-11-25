@@ -25,7 +25,9 @@ public class BannerCloseButtonUI : MonoBehaviour
             var prefab = Resources.Load<BannerCloseButtonUI>(ResourcePath);
             if (prefab == null)
             {
+#if ENABLE_DEBUG_LOG
                 Debug.LogError($"[BannerCloseButtonUI] Không tìm thấy prefab trong Resources/{ResourcePath}.prefab");
+#endif
                 return;
             }
 
@@ -75,7 +77,9 @@ public class BannerCloseButtonUI : MonoBehaviour
         _targetCanvas = FindBestCanvas();
         if (_targetCanvas == null)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogError("[BannerCloseButtonUI] Không tìm thấy Canvas trong scene.");
+#endif
             return;
         }
 
@@ -97,7 +101,9 @@ public class BannerCloseButtonUI : MonoBehaviour
     {
         if (_targetCanvas == null)
         {
+#if ENABLE_DEBUG_LOG
             Debug.LogWarning("[BannerCloseButtonUI] Canvas null, thử tìm lại.");
+#endif
             _targetCanvas = FindBestCanvas();
             if (_targetCanvas == null) return;
             _targetCanvasScaler = _targetCanvas.GetComponent<CanvasScaler>();

@@ -8,6 +8,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Falcon.Helpers.Devkit;
+using Falcon.Modules.Core.BigData;
 using Falcon.Modules.Core.RemoteConfigCms;
 using Falcon.Modules.Core.Utils.Time.Runtime;
 using UnityEngine;
@@ -199,9 +201,11 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                 MediationManager.Instance.DebugLog("floor : " +
                                                    (a.multiplier * MultiCall.Instance.valueDefaultRewarded)
                                                    .ToString(CultureInfo.InvariantCulture));
-                MaxSdk.SetRewardedAdExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, (a.multiplier *
-                        MultiCall.Instance.valueDefaultRewarded * MultiCall.MULTIPLIER)
-                    .ToString(CultureInfo.InvariantCulture));
+                var currentFloor = a.multiplier * MultiCall.Instance.valueDefaultRewarded * MultiCall.MULTIPLIER;
+                MaxSdk.SetRewardedAdExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, currentFloor.ToString(CultureInfo.InvariantCulture));
+                a.currentFloor = currentFloor;
+                AdViewRequestGate.Open(AdType.Reward, "Max", AdViewRequestGate.MultiCallAlgorithm(GetIndex()));
+                SnapshotRequestTier(MultiCall.Instance.dictionaryRewarded, adUnitId);
                 MaxSdk.LoadRewardedAd(adUnitId);
             }
         }
@@ -404,9 +408,11 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
                 // MediationManager.Instance.DebugLog("floor : " +
                 //                                    (a.multiplier * MultiCall.Instance.valueDefaultInterstitial)
                 //                                    .ToString(CultureInfo.InvariantCulture));
-                MaxSdk.SetInterstitialExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, (a.multiplier *
-                        MultiCall.Instance.valueDefaultInterstitial * MultiCall.MULTIPLIER)
-                    .ToString(CultureInfo.InvariantCulture));
+                var currentFloor = a.multiplier * MultiCall.Instance.valueDefaultInterstitial * MultiCall.MULTIPLIER;
+                MaxSdk.SetInterstitialExtraParameter(adUnitId, MultiCall.KEY_SET_BID_FLOOR, currentFloor.ToString(CultureInfo.InvariantCulture));
+                a.currentFloor = currentFloor;
+                AdViewRequestGate.Open(AdType.Interstitial, "Max", AdViewRequestGate.MultiCallAlgorithm(GetIndex()));
+                SnapshotRequestTier(MultiCall.Instance.dictionaryInterstitial, adUnitId);
                 MaxSdk.LoadInterstitial(adUnitId);
             }
         }

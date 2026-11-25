@@ -1,0 +1,6 @@
+{
+  "name": "RealtimeEvents.Editor",
+  "references": [],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

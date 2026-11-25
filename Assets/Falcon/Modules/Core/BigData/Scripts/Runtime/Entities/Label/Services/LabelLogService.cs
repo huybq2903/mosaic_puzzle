@@ -180,8 +180,8 @@ namespace Falcon.Modules.Core.BigData
                     AnalyticLogger.Instance.Warning(
                         $"Nhãn '{labelKey}' bỏ qua: trùng tên cột hợp đồng trên wire (§H1). Nhãn " +
                         "đứng cạnh cột thật trong dữ liệu — hai số cùng tên khác nghĩa là analyst " +
-                        "đọc nhầm chắc chắn. Đặt tên khác, vd feature streak của game thì là " +
-                        "'streak_status' chứ đừng 'win_streak'.");
+                        "đọc nhầm chắc chắn. Đặt tên khác, vd số lần thua của game thì là " +
+                        "'retry_count' chứ đừng 'fail_count'.");
                     return false;
 
                 case LabelCheck.ValueTooLong:

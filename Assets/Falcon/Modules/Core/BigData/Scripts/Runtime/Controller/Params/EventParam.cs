@@ -13,7 +13,7 @@ using JetBrains.Annotations;
 namespace Falcon.Modules.Core.BigData
 {
     [Serializable]
-    public class EventParam : FParam
+    public class EventParam : ALiveOpsParam
     {
         [NotNull] public string eventName = UNKNOWN;
 
@@ -33,6 +33,7 @@ namespace Falcon.Modules.Core.BigData
 
         public override void CorrectValues()
         {
+            base.CorrectValues();
             eventName = CheckNonBlank(eventName, nameof(eventName));
             eventWhere = CheckNonBlank(eventWhere, nameof(eventWhere));
             eventWhen = CheckNonBlank(eventWhen, nameof(eventWhen));
@@ -50,10 +51,7 @@ namespace Falcon.Modules.Core.BigData
         {
             var dictionary = base.ToDictionary();
             dictionary.Remove(nameof(extraMeta));
-            if (extraMeta == null) return dictionary;
-
-            foreach (var (key, value) in extraMeta) dictionary.PutIfAbsentAndNotNull(key, value);
-            return dictionary;
+            return dictionary.MergeExtras(extraMeta, this);
         }
     }
 }

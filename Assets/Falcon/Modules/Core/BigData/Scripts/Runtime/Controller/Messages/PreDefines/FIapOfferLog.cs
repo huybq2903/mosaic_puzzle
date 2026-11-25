@@ -11,7 +11,7 @@ using UnityEngine.Scripting;
 
 namespace Falcon.Modules.Core.BigData
 {
-    public class FIapOfferLog : AFalconLog
+    public class FIapOfferLog : AFalconLog, IPerfPackCarrier
     {
         public IapOfferParam param;
 

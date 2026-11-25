@@ -15,10 +15,10 @@ namespace Falcon.Modules.Core.BigData.Tests
             // trên phần còn lại — nửa có nửa không. Chặn từ cửa, mọi cách viết.
             var state = new CommonParamState();
 
-            Assert.AreEqual(CommonParamSet.WireKeyRejected, state.Set("win_streak", 5, persist: false));
-            Assert.AreEqual(CommonParamSet.WireKeyRejected, state.Set("winStreak", () => 5));
-            Assert.IsFalse(state.Has("win_streak"));
-            Assert.IsFalse(state.Has("winStreak"));
+            Assert.AreEqual(CommonParamSet.WireKeyRejected, state.Set("fail_count", 5, persist: false));
+            Assert.AreEqual(CommonParamSet.WireKeyRejected, state.Set("failCount", () => 5));
+            Assert.IsFalse(state.Has("fail_count"));
+            Assert.IsFalse(state.Has("failCount"));
         }
 
         [Test]
@@ -27,9 +27,9 @@ namespace Falcon.Modules.Core.BigData.Tests
             // Key persist từ bản SDK cũ có thể đụng cột mà bản mới vừa thêm vào hợp đồng
             var state = new CommonParamState();
 
-            state.Restore(new Dictionary<string, object> { ["win_streak"] = 9, ["guild_id"] = "g1" });
+            state.Restore(new Dictionary<string, object> { ["fail_count"] = 9, ["guild_id"] = "g1" });
 
-            Assert.IsFalse(state.Has("win_streak"));
+            Assert.IsFalse(state.Has("fail_count"));
             Assert.IsTrue(state.Has("guild_id"));
         }
         [Test]
@@ -111,11 +111,13 @@ namespace Falcon.Modules.Core.BigData.Tests
         [Test]
         public void SetTwice_LastValueWins()
         {
+            // Khoá mẫu KHÔNG được trùng cột hợp đồng: test này từng dùng "tier", rồi 1.5.5 thêm
+            // cột tier vào AdParam nên sổ reflection tự cấm tên đó (đúng thiết kế của §H1).
             var state = new CommonParamState();
-            state.Set("tier", 1, persist: false);
-            state.Set("tier", 5, persist: false);
+            state.Set("cohort", 1, persist: false);
+            state.Set("cohort", 5, persist: false);
 
-            Assert.AreEqual(5, state.BuildInfo()["tier"]);
+            Assert.AreEqual(5, state.BuildInfo()["cohort"]);
         }
 
         [Test]
@@ -197,11 +199,11 @@ namespace Falcon.Modules.Core.BigData.Tests
         {
             // Provider không lưu được xuống đĩa, nên để lại bản cũ là lần sau khởi động ăn giá trị chết
             var state = new CommonParamState();
-            state.Set("tier", 3, persist: true);
+            state.Set("cohort", 3, persist: true);
 
-            state.Set("tier", () => 7);
+            state.Set("cohort", () => 7);
 
-            Assert.AreEqual(7, state.BuildInfo()["tier"]);
+            Assert.AreEqual(7, state.BuildInfo()["cohort"]);
             Assert.IsEmpty(state.PersistedValues);
         }
 

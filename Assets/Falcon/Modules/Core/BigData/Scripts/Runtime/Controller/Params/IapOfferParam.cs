@@ -12,7 +12,7 @@ using UnityEngine;
 namespace Falcon.Modules.Core.BigData
 {
     [Serializable]
-    public class IapOfferParam : FParam
+    public class IapOfferParam : ALiveOpsParam
     {
         /// <summary>
         ///     Id định danh cho offer trong hệ thống offers
@@ -124,14 +124,12 @@ namespace Falcon.Modules.Core.BigData
         {
             var dictionary = base.ToDictionary();
             dictionary.Remove(nameof(extraMeta));
-            if (extraMeta == null) return dictionary;
-
-            foreach (var (key, value) in extraMeta) dictionary.PutIfAbsentAndNotNull(key, value);
-            return dictionary;
+            return dictionary.MergeExtras(extraMeta, this);
         }
 
         public override void CorrectValues()
         {
+            base.CorrectValues();
             offerId = CheckNonBlank(offerId, nameof(offerId));
             offerCategory = CheckNonBlank(offerCategory, nameof(offerCategory));
             offerLayout = CheckNonBlank(offerLayout, nameof(offerLayout));

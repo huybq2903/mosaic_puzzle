@@ -21,6 +21,39 @@ namespace Falcon.Modules.Core.BigData.Tests
             };
         }
 
+        // ---- Hai id của bản thiết kế màn (thêm 19/10) ----
+
+        [Test]
+        public void TwoDesignIds_AreSeparateColumns()
+        {
+            // currentLevelId = băm data + param (client tính) · levelDataId = băm data (SERVER đặt,
+            // client echo). Giữ hai cột để (1) nối được sang catalog level của game backend và
+            // (2) tách "đổi layout" với "đổi tuning".
+            var param = NewPassParam();
+            param.currentLevelId = "aB3dE";
+            param.levelDataId = "srv42";
+
+            var dict = param.ToDictionary();
+
+            Assert.AreEqual("aB3dE", dict["currentLevelId"]);
+            Assert.AreEqual("srv42", dict["levelDataId"]);
+        }
+
+        [Test]
+        public void LevelDataId_IsAbsentWhenUnknown_NotEmptyString()
+        {
+            // Game chưa có id của server (ván offline, hoặc màn không đi qua bản tin level-ready)
+            // thì cột VẮNG MẶT — "vắng = không biết", đừng gửi chuỗi rỗng rồi bắt kho đoán.
+            Assert.IsFalse(NewPassParam().ToDictionary().ContainsKey("levelDataId"));
+        }
+
+        [Test]
+        public void LevelDataId_IsReservedAgainstGameKeys()
+        {
+            Assert.IsTrue(FWireReservedKeys.IsReserved("levelDataId"));
+            Assert.IsTrue(FWireReservedKeys.IsReserved("level_data_id"));
+        }
+
         [Test]
         public void ToDictionary_StatusAlwaysEmitted_WhenExtraMetaNull()
         {
@@ -155,13 +188,78 @@ namespace Falcon.Modules.Core.BigData.Tests
         }
 
         [Test]
-        public void CorrectValues_NegativeDuration_ResetToZero()
+        public void CorrectValues_NegativeDuration_BecomesAbsent_NotZero()
         {
+            // Vắng còn hơn một số sai trông hợp lệ (AbsentNotZero 12/11): trước đây kẹp về 0.
             var param = NewPassParam();
             param.duration = TimeSpan.FromSeconds(-10);
             LogAssert.Expect(LogType.Error, new Regex("duration"));
             param.CorrectValues();
-            Assert.AreEqual(TimeSpan.Zero, param.duration);
+            Assert.IsNull(param.duration);
+            Assert.IsFalse(param.ToDictionary().ContainsKey("duration"));
+        }
+
+        [Test]
+        public void Duration_NotGiven_IsAbsentFromPayload()
+        {
+            // Ký với loader 12/11 (AbsentNotZero mục 2): game không truyền thì wire KHÔNG nhận 0.
+            var pass = new LevelPassParamV2 { playTurnId = "t", currentLevel = 1, difficulty = "Easy" };
+            var fail = new LevelFailParamV2 { playTurnId = "t", currentLevel = 1, difficulty = "Easy" };
+            var legacy = new LevelParam { currentLevel = 1, difficulty = "Easy", status = LevelStatus.Fail };
+            pass.CorrectValues();
+            fail.CorrectValues();
+            legacy.CorrectValues();
+
+            Assert.IsFalse(pass.ToDictionary().ContainsKey("duration"));
+            Assert.IsFalse(fail.ToDictionary().ContainsKey("duration"));
+            Assert.IsFalse(legacy.ToDictionary().ContainsKey("duration"));
+        }
+
+        [Test]
+        public void LevelProgress_NotGiven_IsAbsentOnFailAndHeartbeat()
+        {
+            // Hợp đồng đợt 3 B13: game không gán thì VẮNG, không còn 0 (lẫn với "thua ngay từ đầu").
+            var fail = new LevelFailParamV2 { playTurnId = "t", currentLevel = 1, difficulty = "Easy" };
+            var heartbeat = new LevelHeartBeatParamV2 { playTurnId = "t", currentLevel = 1, difficulty = "Easy" };
+            var legacy = new LevelParam { currentLevel = 1, difficulty = "Easy", status = LevelStatus.Fail };
+            fail.CorrectValues();
+            heartbeat.CorrectValues();
+            legacy.CorrectValues();
+
+            Assert.IsFalse(fail.ToDictionary().ContainsKey("levelProgress"));
+            Assert.IsFalse(heartbeat.ToDictionary().ContainsKey("levelProgress"));
+            Assert.IsFalse(legacy.ToDictionary().ContainsKey("levelProgress"));
+        }
+
+        [Test]
+        public void LevelProgress_ExplicitZero_IsStillSent()
+        {
+            var fail = new LevelFailParamV2 { playTurnId = "t", currentLevel = 1, difficulty = "Easy", levelProgress = 0 };
+            fail.CorrectValues();
+            Assert.AreEqual(0, fail.ToDictionary()["levelProgress"]);
+        }
+
+        [Test]
+        public void LevelProgress_PassIsAlways100_StartOfLegacyIsZero()
+        {
+            var pass = NewPassParam();
+            pass.levelProgress = null;
+            pass.CorrectValues();
+            Assert.AreEqual(100, pass.ToDictionary()["levelProgress"]);
+
+            var legacyStart = new LevelParam { currentLevel = 1, difficulty = "Easy", status = LevelStatus.Start };
+            legacyStart.CorrectValues();
+            Assert.AreEqual(0, legacyStart.ToDictionary()["levelProgress"]);
+        }
+
+        [Test]
+        public void Duration_ExplicitZero_IsStillSent()
+        {
+            // 0 truyền tường minh (vd đường Level Core luôn truyền time) vẫn là 0 — SDK không đoán.
+            var param = NewPassParam();
+            param.duration = TimeSpan.Zero;
+            param.CorrectValues();
+            Assert.AreEqual(0L, param.ToDictionary()["duration"]);
         }
 
         [Test]

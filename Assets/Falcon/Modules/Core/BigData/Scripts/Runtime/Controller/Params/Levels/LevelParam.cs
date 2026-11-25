@@ -18,19 +18,31 @@ namespace Falcon.Modules.Core.BigData
     public class LevelParam : ALevelParamV2
     {
         public LevelStatus status;
-        public TimeSpan duration;
+        /// <summary>
+        ///     Thời lượng lượt. <b>Vắng khi game không truyền</b> (ký với loader 12/11, <c>Request-Loader-AbsentNotZero.md</c>
+        ///     mục 2) — trước đây không truyền thì wire nhận <c>0</c>, lẫn với lượt thật dưới 1 giây. Giá trị truyền
+        ///     tường minh, kể cả <c>0</c>, vẫn gửi nguyên.
+        /// </summary>
+        [FKey(RemoveIfNull = true)] public TimeSpan? duration;
 
         [FKey(RemoveIfNull = true)] public int? movesUsed;
         [FKey(RemoveIfNull = true)] public int? score;
         [FKey(RemoveIfNull = true)] public int? wave;
+        /// <summary>
+        ///     Booster đã dùng TRONG ván: mã → <b>số LẦN DÙNG</b> (không phải số món bị trừ), <b>KHÔNG gồm</b> booster
+        ///     chọn trước ván (cái đó ở <c>preBoostersUsed</c> của dòng Start). Định nghĩa chốt với loader 10/11 —
+        ///     trước đó hợp đồng chỉ ghi "số lượng dùng trong màn", nên dữ liệu cũ tuỳ cách từng game hiểu.
+        ///     <br/>SDK KHÔNG tự tính field này — game truyền. Đây là nguồn của "dùng bao nhiêu lần"; từng lần dùng
+        ///     (đoạn nào của ván, booster có từ đâu) đi ở <c>f_sdk_level_action_booster</c>, đừng cộng hai nguồn.
+        /// </summary>
         [FKey(RemoveIfNull = true)] [CanBeNull]
         public Dictionary<string, int> boostersUsed;
 
         /// <summary>
-        /// Người chơi thực hiện được bao nhiêu % của level rồi (từ 0 -> 100%)
-        /// Mặc định Start -> 0%, Pass -> 100% 
+        ///     Người chơi đã đi được bao nhiêu % của level (0–100). Start luôn 0, Pass luôn 100.
+        ///     <br/><b>Vắng khi game không gán</b> ở các status khác (hợp đồng đợt 3 B13) — trước đây wire nhận <c>0</c>.
         /// </summary>
-        public int levelProgress;
+        [FKey(RemoveIfNull = true)] public int? levelProgress;
 
         public override void CorrectValues()
         {
@@ -53,6 +65,8 @@ namespace Falcon.Modules.Core.BigData
                 levelProgress = CheckNumberNonNegative(levelProgress, "levelPercentage");
             }
 
+            FBoosterRegistry.WarnIfAnyUnknown(boostersUsed, "boosters_used (lớp cũ)");
+
             if (boostersUsed == null) return;
             foreach (var (key, value) in boostersUsed.AsEnumerable().Where(e => e.Value < 0))
             {
@@ -62,9 +76,16 @@ namespace Falcon.Modules.Core.BigData
             }
         }
 
+        private Dictionary<string, object> PutDuration(Dictionary<string, object> dictionary)
+        {
+            if (duration.HasValue) dictionary[nameof(duration)] = (long)duration.Value.TotalSeconds;
+            else dictionary.Remove(nameof(duration));
+            return dictionary;
+        }
+
         public override Dictionary<string, object> ToDictionary()
         {
-            return base.ToDictionary().Put(nameof(duration), (long)duration.TotalSeconds);
+            return PutDuration(base.ToDictionary());
         }
         
         public override LevelStatus Status => status;

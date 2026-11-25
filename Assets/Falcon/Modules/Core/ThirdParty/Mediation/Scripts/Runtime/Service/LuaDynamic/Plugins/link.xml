@@ -1,0 +1,8 @@
+<!--
+  MoonSharp đăng ký các thư viện chuẩn của Lua (string, table, math...) bằng REFLECTION.
+  IL2CPP strip code không thấy lời gọi trực tiếp -> build release mất các hàm đó, Editor vẫn chạy bình thường.
+  Giữ nguyên toàn bộ assembly.
+-->
+<linker>
+    <assembly fullname="MoonSharp.Interpreter" preserve="all"/>
+</linker>

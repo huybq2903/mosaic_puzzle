@@ -6,6 +6,8 @@
  */
 
 using System.Globalization;
+using Falcon.Helpers.Devkit;
+using Falcon.Modules.Core.BigData;
 using UnityEngine;
 
 namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
@@ -56,6 +58,8 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         protected override void InternalLoadRewarded(string adUnitId)
         {
             MediationManager.Instance.DebugLog("Internal Load Rewarded : " + adUnitId);
+            AdViewRequestGate.Open(AdType.Reward, "Max", AdViewRequestGate.MultiCallAlgorithm(GetIndex()));
+            SnapshotRequestTier(MultiCall.Instance.dictionaryRewarded, adUnitId);
             MaxSdk.LoadRewardedAd(adUnitId);
         }
 
@@ -102,6 +106,8 @@ namespace Falcon.Modules.Core.ThirdParty.Mediation.Runtime
         protected override void InternalLoadInterstitial(string adUnitId)
         {
             MediationManager.Instance.DebugLog("Internal Load Interstitial : " + adUnitId);
+            AdViewRequestGate.Open(AdType.Interstitial, "Max", AdViewRequestGate.MultiCallAlgorithm(GetIndex()));
+            SnapshotRequestTier(MultiCall.Instance.dictionaryInterstitial, adUnitId);
             MaxSdk.LoadInterstitial(adUnitId);
         }
 

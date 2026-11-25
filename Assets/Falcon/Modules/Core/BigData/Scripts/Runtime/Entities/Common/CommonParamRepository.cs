@@ -118,7 +118,7 @@ namespace Falcon.Modules.Core.BigData
                         $"Common param '{key}' trùng tên một cột hợp đồng trên wire (§H1) nên bị " +
                         "từ chối: cho qua thì nó bị cột thật đè trên event có cột đó và chỉ xuất " +
                         "hiện trên phần còn lại — dữ liệu nửa có nửa không, im lặng. Đặt tên khác, " +
-                        "vd feature streak của game thì là 'streak_status' chứ đừng 'win_streak'.");
+                        "vd số lần thua của game thì là 'retry_count' chứ đừng 'fail_count'.");
                     break;
 
                 case CommonParamSet.CentralKeyRejected:

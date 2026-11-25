@@ -120,6 +120,87 @@ namespace Falcon.Modules.Core.BigData.Tests
             Assert.AreEqual(PRODUCT, dict["productId"]);
         }
 
+        // ---- Ngữ cảnh event live-op phải sang được nhánh THẤT BẠI (rà 19/10, ET R2) ----
+
+        [Test]
+        public void FailRow_InheritsLiveOpsContextOfTheOpenAttempt()
+        {
+            // FIapApi.OnFailed cố ý không nhận param, nên nếu state không nhớ thì dòng fail không
+            // thuộc event nào: phễu mua trong event lệch đúng nhánh thất bại, và lệch theo chiều
+            // "trông như không ai thất bại".
+            var state = new PurchaseAttemptState();
+            state.Open(new IapPurchaseAttemptParam
+            {
+                productId = PRODUCT, where = "endless_treasure",
+                liveOpsEvent = "endless_treasure", liveOpsCycleId = "cycle_7",
+                liveOpsRoundId = "round_2", liveOpsStage = 3
+            });
+
+            var fail = state.TakeFail(IapPurchaseFailReason.UserCanceled).param;
+
+            Assert.AreEqual("endless_treasure", fail.liveOpsEvent);
+            Assert.AreEqual("cycle_7", fail.liveOpsCycleId);
+            Assert.AreEqual("round_2", fail.liveOpsRoundId);
+            Assert.AreEqual(3, fail.liveOpsStage);
+            Assert.AreEqual(IapPurchaseFailReason.UserCanceled, fail.failReason);
+        }
+
+        [Test]
+        public void FailRow_OfAPlainPurchase_CarriesNoLiveOpsContext()
+        {
+            // Mua ở shop thường: bốn field phải VẮNG, không được dính ngữ cảnh của lượt trước
+            var state = new PurchaseAttemptState();
+            state.Open(new IapPurchaseAttemptParam
+            {
+                productId = PRODUCT, liveOpsEvent = "endless_treasure", liveOpsCycleId = "cycle_7"
+            });
+            state.TakeFail(IapPurchaseFailReason.UserCanceled);
+
+            state.Open(Attempt());
+            var dict = state.TakeFail(IapPurchaseFailReason.BillingUnavailable).param.ToDictionary();
+
+            Assert.IsFalse(dict.ContainsKey("liveOpsEvent"), "Lượt mua thường không được thừa kế event của lượt trước");
+            Assert.IsFalse(dict.ContainsKey("liveOpsCycleId"));
+        }
+
+        // ---- Trục TÍNH NĂNG cũng phải sang được nhánh thất bại (02/11) ----
+
+        [Test]
+        public void FailRow_InheritsFeatureContextOfTheOpenAttempt()
+        {
+            // Cùng lý lẽ và cùng chiều sai với bốn field live-op ở trên: game gọi Feature.Stamp
+            // lên param lúc OnStarted, nếu state không nhớ thì `started` gắn tính năng mà `failed`
+            // rơi ra ngoài ⇒ trông như mua trong bang hội không ai thất bại. Trục tính năng còn dễ
+            // dính hơn trục event vì tính năng LUÔN BẬT, không đợi đợt nào.
+            var state = new PurchaseAttemptState();
+            var attempt = new IapPurchaseAttemptParam { productId = PRODUCT, where = "guild_shop" };
+            attempt.StampFeature("guild", "T_8812", 3);
+            state.Open(attempt);
+
+            var fail = state.TakeFail(IapPurchaseFailReason.UserCanceled).param;
+
+            Assert.AreEqual("guild", fail.feature);
+            Assert.AreEqual("T_8812", fail.featureInstanceId);
+            Assert.AreEqual(3, fail.featureStage);
+        }
+
+        [Test]
+        public void FailRow_OfAPlainPurchase_CarriesNoFeatureContext()
+        {
+            // Lượt mua thường không được thừa kế tính năng của lượt TRƯỚC — Clear() phải xoá cả ba.
+            var state = new PurchaseAttemptState();
+            var inFeature = new IapPurchaseAttemptParam { productId = PRODUCT };
+            inFeature.StampFeature("guild", "T_8812");
+            state.Open(inFeature);
+            state.TakeFail(IapPurchaseFailReason.UserCanceled);
+
+            state.Open(Attempt());
+            var dict = state.TakeFail(IapPurchaseFailReason.BillingUnavailable).param.ToDictionary();
+
+            Assert.IsFalse(dict.ContainsKey("feature"), "Lượt mua thường không được thừa kế tính năng của lượt trước");
+            Assert.IsFalse(dict.ContainsKey("featureInstanceId"));
+        }
+
         [Test]
         public void AttemptParam_OmitsNullWhere()
         {

@@ -91,18 +91,20 @@ namespace Falcon.Modules.Core.BigData.Tests
         }
 
         [Test]
-        public void MissingTier_StaysNull_NotZero()
+        public void MissingTier_AndTierZero_BothMeanAbsent()
         {
-            // Điều kiện loader đặt: vắng tier = KHÔNG đặt giá sàn, khác hẳn "đặt sàn 0".
-            // Điền 0 cho gọn là xoá vĩnh viễn phân biệt này.
+            // Điều kiện loader 23/09 là "vắng tier = KHÔNG đặt giá sàn, khác hẳn đặt sàn 0" — nhưng
+            // thực địa 26/10 cho thấy mediation gửi tier = 0 cho đúng mấy unit KHÔNG đặt sàn, nên
+            // 1.5.6 chuẩn hoá số không dương về VẮNG ở cả ba đường. Phân biệt "có đặt sàn hay
+            // không" từ nay đọc ở ecpmFloor, KHÔNG đọc ở tier.
             var state = new AdLoadStatsState();
             state.Record(Fail("unit_admob", null));
             state.Record(Fail("unit_max", 0d));
 
             var units = state.TakeAll(64).Single().units;
             Assert.IsNull(units.Single(u => u.adUnitId == "unit_admob").tier);
-            Assert.AreEqual(0d, units.Single(u => u.adUnitId == "unit_max").tier);
-            Assert.AreEqual(2, units.Count, "null và 0 là hai bản ghi khác nhau");
+            Assert.IsNull(units.Single(u => u.adUnitId == "unit_max").tier, "0 cũng là KHÔNG BIẾT");
+            Assert.AreEqual(2, units.Count, "Hai UNIT khác nhau thì vẫn là hai bản ghi");
         }
 
         [Test]
@@ -186,6 +188,137 @@ namespace Falcon.Modules.Core.BigData.Tests
             state.TakeAll(64);
 
             Assert.AreEqual(0, state.Count, "Flush xong kho phải sạch — mỗi stretch một thế hệ cụm");
+        }
+        // ---- 1.5.5: eCPM + thuật toán ----
+
+        [Test]
+        public void Ecpm_IsAveragedOverAttemptsThatHadIt()
+        {
+            var state = new AdLoadStatsState();
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, estimatedEcpm = 10
+            });
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, estimatedEcpm = 20
+            });
+            // lần không có eCPM KHÔNG vào mẫu (nếu vào thì trung bình thành 10)
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, estimatedEcpm = null
+            });
+
+            var unit = state.TakeAll(64).Single().units.Single();
+            Assert.AreEqual(15, unit.EcpmAverage);
+        }
+
+        [Test]
+        public void NonPositiveEcpm_IsNotSampled()
+        {
+            var state = new AdLoadStatsState();
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Reward, adUnitId = "unit_a", success = true, estimatedEcpm = 0
+            });
+
+            Assert.IsNull(state.TakeAll(64).Single().units.Single().EcpmAverage);
+        }
+
+        [Test]
+        public void TwoAlgorithms_DoNotMergeIntoOneRow()
+        {
+            // Nếu gộp thì chính câu hỏi "thuật toán nào load tốt hơn" không trả lời được
+            var state = new AdLoadStatsState();
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, adAlgorithm = "multicall_3"
+            });
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, adAlgorithm = "multicall_5"
+            });
+
+            var batches = state.TakeAll(64);
+            Assert.AreEqual(2, batches.Count);
+            CollectionAssert.AreEquivalent(
+                new[] { "multicall_3", "multicall_5" }, batches.Select(b => b.adAlgorithm).ToList());
+        }
+
+        [Test]
+        public void TierZeroAndNoTier_AreTheSameGroup_AndTheKeyStaysAbsent()
+        {
+            // Caller điền 0 cho unit không đặt sàn thì phải gộp cùng nhóm với "không gửi tier",
+            // và khoá tier không được lên dây mang giá trị 0 (án máy test 26/10).
+            var state = new AdLoadStatsState();
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, tier = 0
+            });
+            state.Record(new AdLoadResultParam
+            {
+                adType = AdType.Interstitial, adUnitId = "unit_a", success = true, tier = null
+            });
+
+            var batch = state.TakeAll(64).Single();
+            Assert.AreEqual(1, batch.units.Count, "Hai lần phải nằm CÙNG một nhóm");
+            Assert.IsNull(batch.units.Single().tier, "Khoá tier phải VẮNG, không phải 0");
+            Assert.AreEqual(2, batch.units.Single().ok);
+        }
+
+        [Test]
+        public void DifferentFloorRole_StaysInItsOwnRecord()
+        {
+            // Gộp hai vai vào một dòng là xoá đúng câu hỏi mà cột sinh ra để trả lời: vai nào fill
+            // tốt hơn. Cùng vết sẹo của adAlgorithm ở 1.5.5.
+            var state = new AdLoadStatsState();
+            var baseFloor = Ok("unit_a", 5.0);
+            baseFloor.ecpmFloorType = "base";
+            var upgrade = Fail("unit_a", 5.0);
+            upgrade.ecpmFloorType = "upgrade_higher";
+            state.Record(baseFloor);
+            state.Record(upgrade);
+
+            var units = state.TakeAll(64).Single().units;
+            Assert.AreEqual(2, units.Count);
+            Assert.AreEqual(1, units.Count(u => u.ecpmFloorType == "base" && u.ok == 1));
+            Assert.AreEqual(1, units.Count(u => u.ecpmFloorType == "upgrade_higher" && u.fail == 1));
+        }
+
+        [Test]
+        public void BlankAndNullFloorRole_ShareOneRecord()
+        {
+            // Hai nhánh mediation, một để null một để "", là CÙNG một sự thật — hai dòng thì không
+            // cộng được với nhau nữa.
+            var state = new AdLoadStatsState();
+            var blank = Ok("unit_a", 5.0);
+            blank.ecpmFloorType = "  ";
+            state.Record(blank);
+            state.Record(Ok("unit_a", 5.0));
+
+            var unit = state.TakeAll(64).Single().units.Single();
+            Assert.IsNull(unit.ecpmFloorType);
+            Assert.AreEqual(2, unit.ok);
+        }
+
+        [Test]
+        public void Percentile_KeepsTheLastValue_WithoutSplittingTheGroup()
+        {
+            var state = new AdLoadStatsState();
+            var first = Ok("unit_a", 5.0);
+            first.ecpmFloorType = "base";
+            first.ecpmFloorPercentile = "P10";
+            var second = Ok("unit_a", 5.0);
+            second.ecpmFloorType = "base";
+            second.ecpmFloorPercentile = "P15";
+            state.Record(first);
+            state.Record(second);
+
+            Assert.AreEqual(1, state.Count, "Percentile KHÔNG làm khoá: trong một vai nó là hằng");
+
+            var unit = state.TakeAll(64).Single().units.Single();
+            Assert.AreEqual("P15", unit.ecpmFloorPercentile);
+            Assert.AreEqual(2, unit.ok);
         }
     }
 }

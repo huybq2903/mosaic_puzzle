@@ -5,6 +5,8 @@
  * Date: 2026-08-05
  */
 
+using System;
+
 // ReSharper disable once CheckNamespace
 namespace Falcon.Modules.Core.BigData
 {
@@ -16,12 +18,15 @@ namespace Falcon.Modules.Core.BigData
     {
         // ---- 3 bước lõi của funnel ftue (§D6) ----
         /// <summary>Vào game scene lần đầu (qua loading/menu).</summary>
+        [Obsolete("FTUE mới: FalconBigDataController.Ftue.* (họ f_sdk_ftue_*, ký 10/11). Funnel ftue cũ vẫn chạy y như trước cho game đang dùng.")]
         public const string SceneEnter = "scene_enter";
 
         /// <summary>Bắt đầu tutorial.</summary>
+        [Obsolete("FTUE mới: FalconBigDataController.Ftue.* (họ f_sdk_ftue_*, ký 10/11). Funnel ftue cũ vẫn chạy y như trước cho game đang dùng.")]
         public const string TutorialStart = "tutorial_start";
 
         /// <summary>Xong tutorial.</summary>
+        [Obsolete("FTUE mới: FalconBigDataController.Ftue.* (họ f_sdk_ftue_*, ký 10/11). Funnel ftue cũ vẫn chạy y như trước cho game đang dùng.")]
         public const string TutorialComplete = "tutorial_complete";
 
         // ---- Vocab feature engagement (§D9): battle pass, daily quest, event/season... ----

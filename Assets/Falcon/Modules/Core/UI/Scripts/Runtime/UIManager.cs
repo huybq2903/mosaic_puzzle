@@ -123,8 +123,14 @@ namespace Falcon.Modules.Core.UI.Runtime
 
         private HashSet<string> _popupFromAddressables = new HashSet<string>();
 
-        // Chống spam: lưu các popup đang được load
+        // Anti-spam: popups currently loading (Addressables or scene)
         private HashSet<string> _popupLoading = new HashSet<string>();
+
+        // Open callbacks of every OpenPopup call made while the popup was loading, invoked once it opens
+        private Dictionary<string, Action<Transform>> _popupLoadingCallbacks = new Dictionary<string, Action<Transform>>();
+
+        // Popups closed while still loading: kept hidden when the load finishes instead of opening
+        private HashSet<string> _popupCloseRequests = new HashSet<string>();
 
         public void OpenPopup(string popupName, Action<Transform> callback = null)
         {
@@ -138,42 +144,84 @@ namespace Falcon.Modules.Core.UI.Runtime
                 }
             }
 
-            // Chống spam: nếu đang load popup này thì bỏ qua
+            // Anti-spam: already loading, so do not load twice. Keep the callback for when it opens,
+            // and an open request made after a close request wins.
             if (_popupLoading.Contains(popupName))
             {
-                Debug.LogWarning($"Popup '{popupName}' is already loading.");
+                _popupCloseRequests.Remove(popupName);
+                if (callback != null)
+                {
+                    _popupLoadingCallbacks.TryGetValue(popupName, out var queued);
+                    _popupLoadingCallbacks[popupName] = queued + callback;
+                }
+
+                Debug.Log($"Popup '{popupName}' is already loading, its callback runs when it opens.");
                 return;
             }
 
             _popupLoading.Add(popupName);
+            _popupLoadingCallbacks[popupName] = callback;
             StartCoroutine(IELoad());
             IEnumerator IELoad()
             {
-                if (_popupFromAddressables.Contains(popupName))
+                Transform instance = null;
+
+                if (!_popupFromAddressables.Contains(popupName))
                 {
-                    yield return IELoadPopupFromAddressable(popupName, callback);
-                    _popupLoading.Remove(popupName);
-                    yield break;
+                    var checkHandle = Addressables.LoadResourceLocationsAsync(popupName);
+                    yield return checkHandle;
+
+                    if (checkHandle.Status == AsyncOperationStatus.Succeeded && checkHandle.Result.Count > 0)
+                        _popupFromAddressables.Add(popupName);
                 }
 
-                var checkHandle = Addressables.LoadResourceLocationsAsync(popupName);
-                yield return checkHandle;
-
-                if (checkHandle.Status == AsyncOperationStatus.Succeeded && checkHandle.Result.Count > 0)
+                if (_popupFromAddressables.Contains(popupName))
                 {
-                    _popupFromAddressables.Add(popupName);
-                    yield return IELoadPopupFromAddressable(popupName, callback);
+                    yield return IELoadPopupFromAddressable(popupName, t => instance = t);
                 }
                 else
                 {
                     Debug.LogWarning($"Popup {popupName} not found in Addressables. Trying load popup scene");
-                    yield return StartCoroutine(IELoadPopupFromScene(popupName, callback));
+                    yield return StartCoroutine(IELoadPopupFromScene(popupName, t => instance = t));
                 }
-                _popupLoading.Remove(popupName);
+
+                OnPopupLoaded(popupName, instance);
             }
         }
-        
-        private IEnumerator IELoadPopupFromAddressable(string popupName, Action<Transform> callback)
+
+        /// <summary>
+        /// Ends the load of a popup: opens it with every queued callback, or keeps it hidden if it was closed meanwhile.
+        /// </summary>
+        /// <param name="popupName">Name of the loaded popup.</param>
+        /// <param name="instance">The loaded popup, or null when the load failed.</param>
+        private void OnPopupLoaded(string popupName, Transform instance)
+        {
+            _popupLoading.Remove(popupName);
+            _popupLoadingCallbacks.TryGetValue(popupName, out var callback);
+            _popupLoadingCallbacks.Remove(popupName);
+            var isCloseRequested = _popupCloseRequests.Remove(popupName);
+
+            if (instance == null)
+            {
+                if (callback != null) Debug.LogWarning($"Popup '{popupName}' failed to load, its open callbacks are dropped.");
+                return;
+            }
+
+            if (isCloseRequested)
+            {
+                // Register it so the next OpenPopup finds it, but do not show it
+                var uiPopup = AddToPopupList(instance);
+                MoveToRootStore(uiPopup);
+                uiPopup.gameObject.SetActive(false);
+
+                Debug.Log($"Popup '{popupName}' was closed while loading, it stays hidden.");
+                return;
+            }
+
+            OpenPopup(instance, callback);
+        }
+
+        private IEnumerator IELoadPopupFromAddressable(string popupName, Action<Transform> onLoaded)
         {
             var handlerPopup = Addressables.LoadAssetAsync<GameObject>(popupName);
             yield return handlerPopup;
@@ -191,7 +239,7 @@ namespace Falcon.Modules.Core.UI.Runtime
                 instance.name = popupName;
 
                 yield return new WaitForEndOfFrame();
-                OpenPopup(instance.transform, callback);
+                onLoaded?.Invoke(instance.transform);
             }
             else
             {
@@ -199,7 +247,7 @@ namespace Falcon.Modules.Core.UI.Runtime
             }
         }
 
-        IEnumerator IELoadPopupFromScene(string popupName, Action<Transform> callback)
+        IEnumerator IELoadPopupFromScene(string popupName, Action<Transform> onLoaded)
         {
             var asyncLoad = SceneManager.LoadSceneAsync(popupName, LoadSceneMode.Additive);
             if (asyncLoad == null) yield break;
@@ -207,13 +255,23 @@ namespace Falcon.Modules.Core.UI.Runtime
             while (!asyncLoad.isDone) yield return new WaitForEndOfFrame();
             var scenePopup = SceneManager.GetSceneByName(popupName);
             var rootObjects = scenePopup.GetRootGameObjects();
+            if (rootObjects.Length == 0)
+            {
+                Debug.LogWarning($"Popup scene {popupName} has no root object.");
+                SceneManager.UnloadSceneAsync(popupName);
+                yield break;
+            }
+
             var instance = rootObjects[0];
-            
+
             // Change Name
             instance.name = popupName;
 
             yield return new WaitForEndOfFrame();
-            OpenPopup(instance.transform, callback);
+
+            // Move it out of the popup scene before the scene unloads, whether it opens or stays hidden
+            MoveToRootStore(AddToPopupList(instance.transform));
+            onLoaded?.Invoke(instance.transform);
 
             // Unload scene after load popup
             SceneManager.UnloadSceneAsync(popupName);
@@ -221,15 +279,39 @@ namespace Falcon.Modules.Core.UI.Runtime
 
         public void OpenPopup(Transform popup, Action<Transform> callback = null)
         {
+            var uiPopup = AddToPopupList(popup);
+            OpenPopup(uiPopup, p => callback?.Invoke(p.transform));
+        }
+
+        /// <summary>
+        /// Adds the popup to the popup list once (adds a UIPopup component if it has none).
+        /// </summary>
+        private UIPopup AddToPopupList(Transform popup)
+        {
             if (!popup.TryGetComponent<UIPopup>(out var uiPopup)) uiPopup = popup.gameObject.AddComponent<UIPopup>();
 
             //Add UIPopup To Default
-            popups.Add(uiPopup);
-            OpenPopup(uiPopup, p => callback?.Invoke(p.transform));
+            if (!popups.Contains(uiPopup)) popups.Add(uiPopup);
+            return uiPopup;
         }
 
         public void OpenPopup(UIPopup popup, Action<Transform> callback = null)
         {
+            if (popup == null) return;
+
+            // Already open: only bring it to the top. Replaying the show animation and the simulated
+            // Awake/Enable/Start would look like the popup opens again.
+            if (popup.visible && popup.gameObject.activeSelf && stackPopups.Contains(popup))
+            {
+                currentActivePopup = popup;
+                RegisterPopupStack(popup);
+                StateActivatePopupStack(true);
+
+                callback?.Invoke(popup.transform);
+                onUIPopupChanged?.Invoke();
+                return;
+            }
+
             onUIPopupBeforeOpen?.Invoke();
             
             // Cache
@@ -237,7 +319,7 @@ namespace Falcon.Modules.Core.UI.Runtime
 
             RegisterPopupStack(popup);
             StateActivatePopupStack(true);
-
+   
             popup.ChangeVisibility(true);
 
             // Broadcast Simulation Awake
@@ -252,7 +334,7 @@ namespace Falcon.Modules.Core.UI.Runtime
 
             // Broadcast Simulation Enable
             popup.gameObject.BroadcastMessage("OnUIPopupEnable", SendMessageOptions.DontRequireReceiver);
-
+            
             // Broadcast Simulation Start
             if (hasStarted)
             {
@@ -279,11 +361,18 @@ namespace Falcon.Modules.Core.UI.Runtime
         {
             foreach (var popup in popups)
             {
-                if (popup.name == popupName)
+                if (popup != null && popup.name == popupName)
                 {
                     ClosePopup(popup);
                     return;
                 }
+            }
+
+            // Still loading: keep it hidden when the load finishes instead of letting it open after this close
+            if (_popupLoading.Contains(popupName))
+            {
+                _popupCloseRequests.Add(popupName);
+                return;
             }
 
             Debug.LogWarning($"Popup '{popupName}' not found in list.");
@@ -291,6 +380,8 @@ namespace Falcon.Modules.Core.UI.Runtime
 
         public void ClosePopup(UIPopup popup)
         {
+            if (popup == null) return;
+
             onUIPopupBeforeClose?.Invoke();
 
             popup.ChangeVisibility(false);
@@ -306,7 +397,9 @@ namespace Falcon.Modules.Core.UI.Runtime
         {
             for (int i = stackPopups.Count - 1; i >= 0; i--)
             {
-                ClosePopup(stackPopups[i]);
+                // Popup destroyed while still in the stack: just drop it
+                if (stackPopups[i] == null) stackPopups.RemoveAt(i);
+                else ClosePopup(stackPopups[i]);
             }
         }
 
@@ -337,22 +430,26 @@ namespace Falcon.Modules.Core.UI.Runtime
         {
             if (currentActivePopup == null) return;
 
-            // If popup in root, force move to root store
-            if (currentActivePopup.transform.parent != rootStorePopup)
-            {
-                currentActivePopup.transform.SetParent(rootStorePopup);
-
-                // Render full stretch rect transform
-                var rect = currentActivePopup.GetComponent<RectTransform>();
-                rect.localScale = Vector3.one;
-                rect.offsetMin = Vector2.zero;
-                rect.offsetMax = Vector2.zero;
-                rect.anchoredPosition3D = Vector3.zero;
-            }
+            MoveToRootStore(currentActivePopup);
 
             // If open popup, always on top of hierarchy
             if (isOpenPopup)
                 currentActivePopup.transform.SetAsLastSibling();
+        }
+
+        private void MoveToRootStore(UIPopup popup)
+        {
+            // If popup in root, force move to root store
+            if (popup.transform.parent == rootStorePopup) return;
+
+            popup.transform.SetParent(rootStorePopup);
+
+            // Render full stretch rect transform
+            var rect = popup.GetComponent<RectTransform>();
+            rect.localScale = Vector3.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
+            rect.anchoredPosition3D = Vector3.zero;
         }
 
         public List<UIPopup> GetAllPopupStack() => stackPopups;
@@ -362,14 +459,14 @@ namespace Falcon.Modules.Core.UI.Runtime
         public bool IsFreeUIPopupFullScreen()
         {
             foreach (var item in stackPopups)
-                if (item.isFullScreen) return false;
+                if (item != null && item.isFullScreen) return false;
             return true;
         }
 
         public bool IsFreeUIPopupHalfScreen()
         {
             foreach (var item in stackPopups)
-                if (item.isHalfScreen) return false;
+                if (item != null && item.isHalfScreen) return false;
             return true;
         }
 

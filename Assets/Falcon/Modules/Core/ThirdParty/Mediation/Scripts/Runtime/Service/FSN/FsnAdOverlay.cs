@@ -45,13 +45,17 @@ public class FsnAdOverlay : MonoBehaviour
 
     public void Show()
     {
+#if ENABLE_DEBUG_LOG
         Debug.Log("show overlay");
+#endif
         gameObject.SetActive(true);
     }
 
     public void Hide()
     {
+#if ENABLE_DEBUG_LOG
         Debug.Log("hide overlay");
+#endif
         gameObject.SetActive(false);
     }
 }

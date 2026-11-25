@@ -7,6 +7,8 @@
 
 using System;
 using System.Collections.Generic;
+using Falcon.Helpers.Devkit;
+using JetBrains.Annotations;
 
 // ReSharper disable once CheckNamespace
 namespace Falcon.Modules.Core.BigData
@@ -23,15 +25,25 @@ namespace Falcon.Modules.Core.BigData
         private readonly LevelTurnService _turnService;
         private readonly LevelLogDecorService _decorService;
         private readonly LabelLogService _labelLogService;
+        private readonly LevelReviveLogService _reviveLogService;
+        private readonly LevelBoosterLogService _boosterLogService;
+        private readonly LevelHeartbeatService _heartbeatService;
+        private readonly TurnLedgerService _turnLedger;
 
         internal FLevelApi(
             LevelLogService logService, LevelTurnService turnService, LevelLogDecorService decorService,
-            LabelLogService labelLogService)
+            LabelLogService labelLogService, LevelReviveLogService reviveLogService,
+            LevelBoosterLogService boosterLogService, LevelHeartbeatService heartbeatService,
+            TurnLedgerService turnLedger)
         {
+            _heartbeatService = heartbeatService;
+            _turnLedger = turnLedger;
             _logService = logService;
             _turnService = turnService;
             _decorService = decorService;
             _labelLogService = labelLogService;
+            _reviveLogService = reviveLogService;
+            _boosterLogService = boosterLogService;
         }
 
         // ---- Đọc / sửa cache của lượt ----
@@ -40,21 +52,127 @@ namespace Falcon.Modules.Core.BigData
         public string CurrentTurnId => _turnService.OpenPlayTurnId;
 
         /// <summary>
+        /// playTurnId của lượt KẾT THÚC gần nhất (Pass / Fail / Skip) — vẫn giữ sau khi lượt kế đã mở. Dùng điền
+        /// <c>triggerPlayTurnId</c> cho Inter chiếu sau thắng / thua (hợp đồng đợt 3 B12). Null nếu chưa có lượt nào
+        /// kết thúc trong lần chạy này.
+        /// </summary>
+        public string LastEndedTurnId => _turnService.LastEndedPlayTurnId;
+
+        /// <summary>
+        ///     Một lần HỒI SINH ĐÃ DÙNG — event <c>f_sdk_level_action_revive</c>, ký với loader 09/11.
+        ///     Chỉ gọi khi hồi sinh THẬT SỰ xảy ra. Lời mời / nhận / từ chối là sự kiện của popup:
+        ///     <c>Ui.OnImpression</c> / <c>Ui.OnClicked</c> / <c>Ui.OnDismissed</c> với bề mặt
+        ///     <see cref="FUiSurface.ReviveOffer"/>.
+        ///     <br/>🔴 Luật tích hợp (chốt 04/09): chỉ báo <c>Fail</c> khi người chơi đã HẾT đường hồi
+        ///     sinh. Trong lúc popup còn hiện, lượt vẫn mở nên <c>playTurnId</c> tự gắn đúng; báo Fail
+        ///     trước thì dòng này vắng id (SDK không đoán id lượt đã đóng).
+        /// </summary>
+        public void OnRevive(LevelReviveParam param)
+        {
+            _reviveLogService.LogRevive(param);
+        }
+
+        /// <inheritdoc cref="OnRevive(LevelReviveParam)"/>
+        /// <param name="progressPct">Tiến độ trong ván lúc hồi sinh, <c>[0, 100]</c>.</param>
+        /// <param name="payMethod">
+        ///     Trả bằng gì — một trong <see cref="FPayMethod"/>. Không có giá trị mặc định, cố ý: game luôn
+        ///     biết người chơi vừa trả bằng gì; thật sự không biết thì truyền <c>null</c> (vắng), đừng
+        ///     truyền <c>free</c>.
+        /// </param>
+        /// <param name="reviveType">
+        ///     Loại hồi sinh — vocab của game, snake_case (<c>extra_moves</c>, <c>extra_time</c>). Cần tách mức thì
+        ///     đưa vào tên loại (<c>extra_moves_5</c>), không có field số lượng.
+        /// </param>
+        public void OnRevive(
+            float progressPct, [CanBeNull] string payMethod, [CanBeNull] string reviveType = null,
+            [CanBeNull] string playTurnId = null, [CanBeNull] Dictionary<string, object> extraMeta = null)
+        {
+            _reviveLogService.LogRevive(new LevelReviveParam
+            {
+                progressPct = progressPct,
+                payMethod = payMethod,
+                reviveType = reviveType,
+                playTurnId = playTurnId,
+                extraMeta = extraMeta
+            });
+        }
+
+        /// <summary>
+        ///     Một lần DÙNG BOOSTER TRONG VÁN — event <c>f_sdk_level_action_booster</c>, ký với loader 10/11. Booster
+        ///     chọn TRƯỚC ván thì khai ở <c>preBoostersUsed</c> của <see cref="OnStart"/>, không phải ở đây.
+        ///     <br/>⚠ Vẫn truyền <c>boostersUsed</c> lúc kết thúc ván như cũ: đó là nguồn của "dùng bao nhiêu lần";
+        ///     event này trả lời "dùng ở đoạn nào" và "booster có từ đâu". Kho đọc mỗi câu từ MỘT nguồn.
+        ///     Popup gợi ý dùng booster: <c>Ui.*</c> với bề mặt <see cref="FUiSurface.BoosterOffer"/>.
+        /// </summary>
+        public void OnBooster(LevelBoosterParam param)
+        {
+            _boosterLogService.LogBooster(param);
+        }
+
+        /// <inheritdoc cref="OnBooster(LevelBoosterParam)"/>
+        /// <param name="boosterId">Mã theo sổ <c>Resource.RegisterBooster</c>. Thiếu thì SDK bỏ dòng.</param>
+        /// <param name="progressPct">Tiến độ trong ván lúc dùng, <c>[0, 100]</c>.</param>
+        /// <param name="payMethod">
+        ///     Booster CÓ TỪ ĐÂU — <see cref="FPayMethod.Inventory"/> (có sẵn), <see cref="FPayMethod.Currency"/> (mua
+        ///     tại chỗ), <see cref="FPayMethod.Ad"/>, <see cref="FPayMethod.Free"/>. Không có giá trị mặc định, cố ý.
+        /// </param>
+        public void OnBooster(
+            string boosterId, float progressPct, [CanBeNull] string payMethod, [CanBeNull] string playTurnId = null,
+            [CanBeNull] Dictionary<string, object> extraMeta = null)
+        {
+            _boosterLogService.LogBooster(new LevelBoosterParam
+            {
+                boosterId = boosterId,
+                progressPct = progressPct,
+                payMethod = payMethod,
+                playTurnId = playTurnId,
+                extraMeta = extraMeta
+            });
+        }
+
+#pragma warning disable 618
+        /// <summary>
+        ///     ⚠ LỖI THỜI — <c>f_sdk_level_action</c> (1.7.0) đã ngừng. Giữ để code cũ build được; lời gọi
+        ///     được chuyển theo bảng đã gửi loader (<see cref="LevelActionAdapter"/>): hồi sinh ĐÃ NHẬN
+        ///     thành một dòng <c>f_sdk_level_action_revive</c>, còn hồi sinh bị từ chối và booster không
+        ///     sinh dòng nào (kèm cảnh báo).
+        /// </summary>
+        [Obsolete("Dùng Level.OnRevive(...) cho hồi sinh đã dùng, và Ui.* với FUiSurface.ReviveOffer cho lời mời.")]
+        public void OnAction(LevelActionParam param)
+        {
+            var (revive, warning) = LevelActionAdapter.ToRevive(param);
+            if (warning != null) AnalyticLogger.Instance.Warning(warning);
+            if (revive != null) _reviveLogService.LogRevive(revive);
+        }
+
+        /// <inheritdoc cref="OnAction(LevelActionParam)"/>
+        [Obsolete("Dùng Level.OnRevive(...) cho hồi sinh đã dùng, và Ui.* với FUiSurface.ReviveOffer cho lời mời.")]
+        public void OnAction(
+            string action, float progressPct, bool accepted, bool offered = true,
+            [CanBeNull] string boosterId = null, [CanBeNull] string payMethod = null,
+            [CanBeNull] string playTurnId = null,
+            [CanBeNull] Dictionary<string, object> extraMeta = null)
+        {
+            OnAction(new LevelActionParam
+            {
+                action = action,
+                progressPct = progressPct,
+                offered = offered,
+                accepted = accepted,
+                boosterId = boosterId,
+                payMethod = payMethod,
+                playTurnId = playTurnId,
+                extraMeta = extraMeta
+            });
+        }
+#pragma warning restore 618
+
+        /// <summary>
         /// Bộ tham số của ván ĐANG CHƠI, đọc thuần — không đóng ván, không tắt stamp playTurnId.
         /// Dùng cho autosave giữa ván (<see cref="OnPauseExit"/> mang nghĩa "rời ván" nên không
         /// dùng cho việc này được). Null nếu không có ván nào đang mở.
         /// </summary>
         public LevelTurnSnapshot CurrentTurn => _turnService.CurrentSnapshot();
-
-        /// <summary>
-        /// Chuỗi THẮNG hiện tại do SDK tự tính (xuyên level, xuyên session). Đọc ở đây thay vì
-        /// game tự đếm lần hai — đếm hai nơi thì sớm muộn UI và log lệch nhau mà không ai biết
-        /// bên nào đúng. Hết hạn chuỗi theo luật của game thì gọi <see cref="ResetWinStreak"/>.
-        /// </summary>
-        public int WinStreak => _decorService.WinStreak;
-
-        /// <inheritdoc cref="WinStreak"/>
-        public int LoseStreak => _decorService.LoseStreak;
 
         /// <summary>
         /// Cập nhật tham số CẤU HÌNH của ván đang chơi khi nó đổi giữa chừng: mua thêm lượt đi,
@@ -103,33 +221,22 @@ namespace Falcon.Modules.Core.BigData
             _labelLogService.LabelUser(FUserLabelKey.ELO, elo);
         }
 
-        /// <summary>
-        /// Chuỗi thắng của game có luật hết hạn (vd N ngày không chơi là mất chuỗi) → gọi hàm này
-        /// khi luật đó kích hoạt để winStreak trên log về 0. Chỉ reset — không có setter tùy ý
-        /// (streak do SDK tự tính, set tay là claim không bằng chứng).
-        /// </summary>
-        public void ResetWinStreak()
-        {
-            _decorService.ResetWinStreak();
-        }
-
-        /// <inheritdoc cref="ResetWinStreak"/>
-        public void ResetLoseStreak()
-        {
-            _decorService.ResetLoseStreak();
-        }
 
         /// <summary>
         /// Người chơi RỜI ván dở (thoát ra menu / save-and-quit): trả về snapshot bộ tham số của
         /// lượt chơi để game persist vào save (serializable), đồng thời tắt stamp playTurnId cho
         /// các log ngoài gameplay (ad ở menu không mang id của lượt nữa).
         /// Trả về null nếu không có lượt nào đang mở.
-        /// KHÔNG phát event nào — muốn tính là bỏ ván hẳn thì gọi <see cref="OnFail"/> với
-        /// <see cref="LevelFailReason.Quit"/>.
+        /// <br/>Đây là "ra khỏi ngữ cảnh" (hợp đồng đợt 3 B5): SDK bắn MỘT heartbeat của đoạn ngay tại đây rồi mới đóng
+        /// đoạn — thoát lượt bằng nút mà không xuống nền vẫn còn dòng; lần xuống nền sau không còn lượt mở nên không trùng.
+        /// Muốn tính là bỏ ván hẳn thì gọi <see cref="OnFail"/> với <see cref="LevelFailReason.Quit"/> thay vì hàm này.
         /// </summary>
         public LevelTurnSnapshot OnPauseExit()
         {
-            return _turnService.SuspendTurn();
+            _heartbeatService.FireNow();
+            var snapshot = _turnService.SuspendTurn();
+            _turnLedger.End();
+            return snapshot;
         }
 
         /// <summary>
@@ -144,8 +251,8 @@ namespace Falcon.Modules.Core.BigData
             if (snapshot == null) return;
             // Không phải vác movesLimit/timeLimitSec qua save nữa: chúng là nhãn của MÀN, SDK tự
             // lưu và tự nạp lại.
-            OnResume(snapshot.playTurnId, snapshot.currentLevel, snapshot.difficulty,
-                snapshot.currentLevelId);
+            Resume(snapshot.playTurnId, snapshot.currentLevel, snapshot.difficulty, snapshot.currentLevelId,
+                null, null, Math.Max(1, snapshot.turnSegmentNo) + 1);
         }
 
         /// <inheritdoc cref="OnResume(LevelTurnSnapshot)"/>
@@ -153,8 +260,90 @@ namespace Falcon.Modules.Core.BigData
             string playTurnId, int currentLevel, string difficulty = null, string currentLevelId = null,
             int? movesLimit = null, int? timeLimitSec = null)
         {
+            // Không có bản chụp thì không biết đoạn trước là đoạn mấy — chơi tiếp nên ít nhất là đoạn 2
+            Resume(playTurnId, currentLevel, difficulty, currentLevelId, movesLimit, timeLimitSec, 2);
+        }
+
+        private void Resume(
+            string playTurnId, int currentLevel, string difficulty, string currentLevelId,
+            int? movesLimit, int? timeLimitSec, int segmentNo)
+        {
             _turnService.RestoreTurn(playTurnId, currentLevel, currentLevelId, difficulty,
-                movesLimit, timeLimitSec);
+                movesLimit, timeLimitSec, segmentNo);
+            // Sổ thời gian B6: chơi tiếp = đoạn mới, sổ đặt lại (chỉ khi mở lại được lượt)
+            if (!string.IsNullOrEmpty(playTurnId) && _turnService.OpenPlayTurnId == playTurnId)
+                _turnLedger.Begin(playTurnId, segmentNo);
+        }
+
+        // ---- Sổ thời gian lượt chơi (hợp đồng đợt 3 B6) ----
+
+        /// <summary>
+        /// Khai MỘT LẦN lúc khởi tạo game những gì game sẽ báo cho sổ thời gian lượt chơi (hợp đồng đợt 3 B6). SDK lưu qua
+        /// restart và gửi 5 cờ <c>cap_*</c> trên mọi dòng lượt + <c>app_open</c> (lần mở Cold mang giá trị lần khai trước).
+        /// Khả năng chưa khai thì các field của nó VẮNG (không phải 0) — kho lọc theo cờ trước khi đọc.
+        /// </summary>
+        /// <param name="busy">Game gọi <see cref="SetBusy"/> quanh lúc người chơi phải chờ.</param>
+        /// <param name="actions">Game gọi <see cref="OnPlayerAction"/> cho mỗi thao tác có tác dụng.</param>
+        /// <param name="ineffectiveTap">Game gọi <see cref="OnIneffectiveTap"/> khi bắt được chạm không có tác dụng.</param>
+        /// <param name="speed">Game có x2 và gọi <c>OnSpeedAction</c>.</param>
+        /// <param name="screen">Game gọi <c>Surface.Enter</c> / <c>Exit</c> cho popup trong level.</param>
+        public void Declare(bool busy, bool actions, bool ineffectiveTap, bool speed, bool screen)
+        {
+            _turnLedger.Declare(new TurnCaps
+            {
+                busy = busy, actions = actions, ineffectiveTap = ineffectiveTap, speed = speed, screen = screen
+            });
+        }
+
+        /// <summary>
+        /// Một thao tác chơi CÓ TÁC DỤNG (đặt khối, nối ô, điền số… — game tự định nghĩa và ghi vào tài liệu tích hợp).
+        /// SDK tự tính <c>n_actions</c>, <c>first_action_sec</c>, <c>sec_since_last_action</c>, các khoảng không thao tác.
+        /// O(1). Tên khác <c>OnAction</c> cũ (đã ngừng) có chủ đích.
+        /// </summary>
+        public void OnPlayerAction() => _turnLedger.OnPlayerAction();
+
+        /// <summary>
+        /// Người chơi KHÔNG làm được thao tác nào có tác dụng (hoạt hình, nổ dây chuyền, rơi khối, chuyển cảnh) — dù game có
+        /// chặn chạm hay không. Gọi <c>true</c> lúc bắt đầu, <c>false</c> lúc hết. Game cho thao tác chồng lên hoạt hình
+        /// thì lúc đó không bận; <b>hết nước đi KHÔNG tính bận</b> (người chơi đang nghĩ / kẹt). Cần khai <c>busy</c>.
+        /// </summary>
+        public void SetBusy(bool busy) => _turnLedger.SetBusy(busy);
+
+        /// <summary>
+        /// Chạm KHÔNG có tác dụng (tuỳ chọn): lúc bận ⇒ <c>n_taps_while_busy</c> (sốt ruột), lúc không bận ⇒
+        /// <c>n_ineffective_taps</c> (bấm trượt / không hiểu). Game không bắt được thì đừng gọi và đừng khai.
+        /// </summary>
+        public void OnIneffectiveTap() => _turnLedger.OnIneffectiveTap();
+
+        /// <summary>
+        /// Người chơi bật / tắt x2 hoặc bỏ qua hoạt hình — <c>f_sdk_speed_action</c> (hợp đồng đợt 3 B7), trong lẫn ngoài level.
+        /// <c>SpeedOn</c> / <c>SpeedOff</c> cũng là nguồn của <c>t_speed_on_sec</c> trên sổ lượt (cần khai <c>speed</c>).
+        /// </summary>
+        /// <param name="action">Hành động.</param>
+        /// <param name="animType">Loại đoạn hoạt hình.</param>
+        /// <param name="animName">Tên riêng của game (tuỳ chọn).</param>
+        /// <param name="secIntoAnim">Chỉ <see cref="SpeedAction.SkipAnim"/>: đã xem bao nhiêu giây. Hành động khác thì bỏ qua.</param>
+        public void OnSpeedAction(SpeedAction action, AnimType animType, string animName = null, float? secIntoAnim = null)
+        {
+            if (secIntoAnim.HasValue && action != SpeedAction.SkipAnim)
+            {
+                AnalyticLogger.Instance.Warning($"OnSpeedAction({action}): secIntoAnim chỉ dành cho SkipAnim — bỏ qua.");
+                secIntoAnim = null;
+            }
+
+            if (secIntoAnim is < 0 || secIntoAnim.HasValue && (float.IsNaN(secIntoAnim.Value) || float.IsInfinity(secIntoAnim.Value)))
+                secIntoAnim = null;
+
+            if (action == SpeedAction.SpeedOn) _turnLedger.SetSpeed(true);
+            else if (action == SpeedAction.SpeedOff) _turnLedger.SetSpeed(false);
+
+            _logService.LogSpeedAction(new FSpeedActionLog
+            {
+                action = action,
+                animType = animType,
+                animName = string.IsNullOrEmpty(animName) ? null : animName,
+                secIntoAnim = secIntoAnim
+            });
         }
 
         // ---- Báo khoảnh khắc (phát event) ----
@@ -202,12 +391,16 @@ namespace Falcon.Modules.Core.BigData
         }
 
         /// <summary>
-        /// Nhịp giữa ván (heartbeat) — bản tin bảo hiểm cho lượt chơi dài, app bị kill cứng vẫn
-        /// còn dấu vết tiến độ. Thường do heartbeat service của module gọi, game tự nối cũng được.
+        /// CẬP NHẬT tham số tiến độ của lượt đang mở (điểm, số nước, thời lượng, booster, <c>levelProgress</c>…) —
+        /// <b>không sinh dòng</b> (hợp đồng đợt 3 B5, ký 23/11: khi nào ghi heartbeat là việc của SDK). SDK tự bắn heartbeat
+        /// lúc app xuống nền, lúc <see cref="OnPauseExit"/>, và mang bản cập nhật gần nhất này (kèm <c>paramsUpdatedAt</c>).
+        /// <br/>Game tự quản tham số thì gọi mỗi khi tham số đổi. Game dùng APS (<c>ALevelHeartBeatService</c>) thì không cần
+        /// gọi: SDK hỏi APS lúc bắn. Không có lượt mở thì bỏ qua (cảnh báo log dev).
+        /// <br/>⚠ Đổi hành vi từ bản trước: lời gọi này từng tự sinh một dòng heartbeat.
         /// </summary>
         public void OnHeartbeat(LevelHeartBeatParamV2 param)
         {
-            _logService.LogLevelHeartbeat(param);
+            _heartbeatService.UpdateParams(param);
         }
 
         /// <summary>
@@ -221,7 +414,7 @@ namespace Falcon.Modules.Core.BigData
 
         /// <inheritdoc cref="OnPass(LevelPassParamV2)"/>
         public void OnPass(
-            int? score = null, TimeSpan duration = default,
+            int? score = null, TimeSpan? duration = null,
             Dictionary<string, int> boostersUsed = null, int? movesUsed = null,
             Dictionary<string, object> extraMeta = null)
         {
@@ -245,10 +438,10 @@ namespace Falcon.Modules.Core.BigData
 
         /// <inheritdoc cref="OnFail(LevelFailParamV2)"/>
         /// <param name="failReason">Thua VÌ SAO (hợp đồng §D). Không biết thì bỏ trống, đừng điền bừa.</param>
-        /// <param name="levelProgress">Đi được bao nhiêu % màn lúc thua (0-100).</param>
+        /// <param name="levelProgress">Đi được bao nhiêu % màn lúc thua (0-100). Không đo được thì bỏ trống — field vắng, không gửi 0.</param>
         public void OnFail(
             LevelFailReason? failReason = null, int? levelProgress = null,
-            int? score = null, TimeSpan duration = default,
+            int? score = null, TimeSpan? duration = null,
             Dictionary<string, int> boostersUsed = null, int? movesUsed = null,
             Dictionary<string, object> extraMeta = null)
         {
@@ -259,9 +452,9 @@ namespace Falcon.Modules.Core.BigData
                 duration = duration,
                 boostersUsed = boostersUsed,
                 movesUsed = movesUsed,
+                levelProgress = levelProgress,
                 extraMeta = extraMeta
             };
-            if (levelProgress.HasValue) param.levelProgress = levelProgress.Value;
             _logService.LogLevelFail(param);
         }
     }

@@ -24,6 +24,39 @@ namespace Falcon.Modules.Core.BigData
         }
 
         /// <summary>
+        ///     Khai HẠNG của một tên tiền — một lần cho mỗi tên, ở chỗ định nghĩa ví / định nghĩa
+        ///     resource, trước lần log đầu tiên (thường lúc khởi động). SDK tra sổ này rồi tự đóng
+        ///     <c>currencyClass</c> lên mọi dòng tài nguyên.
+        ///     <code>
+        ///     Resource.DeclareCurrency("gold",  FCurrencyClass.Soft);
+        ///     Resource.DeclareCurrency("gem",   FCurrencyClass.Hard);
+        ///     Resource.DeclareCurrency("heart", FCurrencyClass.Live);
+        ///     </code>
+        ///     <br/>Người duy nhất biết chắc <c>screw</c> hay <c>energy</c> là gì là người định nghĩa
+        ///     nó trong game. Kho đoán theo tên thì luôn đi sau game một nhịp.
+        ///     <br/>⚠ <b>Lần khai đầu THẮNG</b> + cảnh báo nếu khai lại khác hạng — xem
+        ///     <see cref="CurrencyClassRegistry"/>. <b>Không chắc thì đừng khai</b>: vắng hạng thì kho
+        ///     tra theo tên, còn hạng sai thì kho TIN.
+        /// </summary>
+        public void DeclareCurrency(string currency, string currencyClass)
+        {
+            CurrencyClassRegistry.Declare(currency, currencyClass);
+        }
+
+        /// <summary>
+        ///     Khai một MÃ BOOSTER — để mã trên dòng level (<c>boosters_used</c>) và mã trên dòng tài
+        ///     nguyên (<c>currency</c>) là **cùng một** chuỗi. Mã lạ: cảnh báo log dev, <b>vẫn gửi</b>.
+        ///     <br/>Phía đọc số đo được rằng lệch tên giữa hai stream làm đóng ba câu hỏi: *booster đã
+        ///     dùng là mua hay được tặng*, *mua rồi có dùng không*, *số dư lúc dùng*.
+        ///     <br/>⚠ Khai booster <b>không</b> tự khai hạng <c>booster</c> — xem
+        ///     <see cref="FBoosterRegistry"/> (một nguồn khai duy nhất).
+        /// </summary>
+        public void RegisterBooster(string boosterId)
+        {
+            FBoosterRegistry.Register(boosterId);
+        }
+
+        /// <summary>
         /// Một giao dịch tài nguyên có nhiều vế (đổi 500 gold lấy 3 booster; mở bundle gems →
         /// gold + booster + heart): gọi MỘT lần cho cả giao dịch, SDK sinh <c>exchangeId</c>
         /// chung và bắn đúng những log resource như cũ kèm id đó.

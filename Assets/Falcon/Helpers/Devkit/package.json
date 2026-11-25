@@ -1,7 +1,7 @@
 {
   "name": "falcon.helpers.devkit",
   "displayName": "Falcon Helper - Dev Kit",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "unity": "6000.0",
   "description": "Containing some pre-defined data structures and frameworks",
   "author": {

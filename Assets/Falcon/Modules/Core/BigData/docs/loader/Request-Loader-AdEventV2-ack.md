@@ -38,6 +38,8 @@ Phần tử `units[]`: `u` (adUnitId) · `ok` · `fail` · `okMs` · `failMs` ·
 | `floor` | **GIÁ SÀN THẬT**, USD/1000 impression — **trung bình** các lần trong dòng | Chỉ mediation biết thật (AdMob) | **Không biết** giá thật |
 
 **Cập nhật 1.4.1 (hình dạng event KHÔNG đổi, chỉ đổi nghĩa một trường):** `floor` ra khỏi khoá gộp.
+⚠ Bản **phát hành** mang thay đổi này là **1.4.2** (1.4.1 không publish) — các bạn ghi mốc đọc theo
+1.4.2; wire của 1.4.2 giống hệt 1.4.1, phần thêm chỉ là điểm nghe nội bộ cho module ngoài.
 Lý do: AdMob tính `floor = revenue × hệ số × 1000`, `revenue` là giá ad vừa load nên là số thực
 liên tục — để trong khoá thì nhánh AdMob mỗi lần load một dòng, mất tác dụng gộp và làm đầy trần
 cụm khiến phần MAX cũng bị xả sớm. Từ 1.4.1: khoá gộp chỉ gồm `adType × adMediation × u × tier`,

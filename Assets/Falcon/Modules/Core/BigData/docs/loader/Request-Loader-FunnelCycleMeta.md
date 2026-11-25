@@ -50,9 +50,49 @@ ca revive-cùng-turn không tồn tại thực tế, 2 terminal = 2 lượt chơ
   Start** — DQ per game/bản đo được mức quên-Start, cùng khuôn vệt xoay-id.
 - Double-fire cùng kết quả: vẫn cùng id như cũ, argMax khử — không đổi.
 
+## 2c. BỔ SUNG 14/10 — hai field GIỜ CHƠI trên cùng event (xin ack một lượt)
+
+Yêu cầu từ phía phân tích: "người chơi mất bao lâu để đi từ đầu phễu tới mốc này, và từ mốc trước
+tới mốc này". Hai field mới, **SDK tự đóng** (game không truyền được):
+
+| Field | Kiểu | Nghĩa |
+|---|---|---|
+| `playSecSinceEnter` | long | Giờ **chơi** (giây) từ mốc **vào phễu** của chu kỳ này tới bước này. Bước đầu chu kỳ = **0** |
+| `playSecSincePrevStep` | long | Giờ **chơi** (giây) từ **bước hợp lệ gần nhất** của funnel đó trong cùng chu kỳ. Bước đầu chu kỳ: **vắng mặt** |
+| `levelsSinceEnter` | long | Số **level mới vượt qua** từ mốc vào phễu tới bước này (nguồn: `MaxPassedLevel` của SDK). Bước đầu chu kỳ = **0** |
+| `levelsSincePrevStep` | long | Số **level mới vượt qua** từ bước hợp lệ gần nhất. Bước đầu chu kỳ: **vắng mặt** |
+
+Vì sao **hai cặp** chứ không một: chúng bù lỗ cho nhau. Giờ chơi **đếm cả** lúc user mở app rồi để
+đó (ngồi lobby 20 phút vẫn cộng 1.200 giây); số level thì không. Đổi lại số level **đứng yên** khi
+user cày lại một màn (thua 10 lần vẫn là 0 level); giờ chơi thì không. "Mốc 5 cần 40 phút chơi và
+12 level" nói được nhiều hơn hẳn chỉ một trong hai.
+
+Năm điều cần vào catalog:
+
+1. **Đồng hồ là thời gian CHƠI tích luỹ, không phải wall-clock**: monotonic, **chỉ chạy khi app ở
+   foreground**. Nên hai bước cách nhau một đêm ngủ vẫn có thể chỉ chênh vài chục giây — đúng theo
+   thiết kế, không phải lỗi. Muốn khoảng wall-clock thì trừ `ts` của hai dòng, dữ liệu đã có sẵn.
+2. **Vắng mặt = KHÔNG BIẾT, không phải 0.** Hai ca: bước đầu chu kỳ (`playSecSincePrevStep`), và
+   ca sổ mốc client lệch sổ phiên (delta ra âm → client bỏ field + ghi warning). Xin **đừng
+   COALESCE về 0** — đó đúng là ca cần đếm riêng.
+3. **Mốc "vào phễu" = bước đầu tiên hợp lệ trong chu kỳ, KHÔNG phải `join`.** Funnel mới phần lớn
+   không có bước `join` (Card Collection: `eligible`/`open`; Endless Treasure: chỉ `open`), neo
+   theo action là mấy event đó trắng số. Mốc này **nhất quán trong cùng `funnelName`** nhưng khác
+   nhau giữa các funnel — nên đừng trung bình xuyên funnel.
+4. `playSecSincePrevStep` tính theo **thời điểm log**, không theo thang `priority`: shape
+   `once_per_cycle` cho phép nhảy cóc mốc, neo theo "priority ngay dưới" thì ca nhảy cóc trắng số.
+5. Cặp level đếm **level vượt qua**, KHÔNG đếm số ván chơi (thua 10 lần một màn = 0). Nguồn là
+   `MaxPassedLevel` của SDK, không phải `currentLevel` game truyền vào `OnStep` — field đó optional
+   nên nếu đọc từ đó thì cột rỗng lỗ chỗ.
+
+⚠ Nói trước một câu vì chắc các bạn sẽ hỏi: đây là **field toàn fleet** — mọi funnel của mọi game
+đều có — **không phải key riêng của một event**. Nó không phạm luật "không thêm cột cho từng
+event"; chính vì thế bên mình mới đặt nó thành cột hợp đồng thay vì nhét vào blob extras.
+
 ## 3. Việc phía các bạn
 
-1. Ack 4 field (additive trên event sống `f_sdk_funnel_data`).
+1. Ack 4 field của 1.3.8 **+ 2 field giờ chơi ở mục 2c** (tất cả additive trên event sống
+   `f_sdk_funnel_data`).
 2. Ghi 2 luật đọc ở mục 1 vào catalog.
 3. Backfill shape chuẩn cho các funnel đã đăng ký: `ftue` = once_ordered; `battle_pass`,
    `daily_quest`, `piggy_bank`, `lucky_wheel` = repeatable (shape này client NGHỈ HƯU 05/09 —

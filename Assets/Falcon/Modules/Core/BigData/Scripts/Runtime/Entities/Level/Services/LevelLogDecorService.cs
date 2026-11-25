@@ -14,26 +14,27 @@ namespace Falcon.Modules.Core.BigData
     /// <summary>
     /// Trang trí level log trong pipeline gửi: điền tham số lượt chơi từ cache
     /// (<see cref="LevelTurnService"/>) rồi tính các counter phái sinh (maxPassedLevel,
-    /// failCount, playCount, win/lose streak).
+    /// failCount, playCount).
+    /// <br/>⚠ KHÔNG còn đếm win/lose streak (bỏ 14/10, chốt owner): chuỗi Pass/Fail suy lại được
+    /// từ chính stream level, mà mọi định nghĩa "phủ cả ván bỏ ngang" đều là chính sách per-game —
+    /// nhét vào cột chung là mất so-chéo-game. Game cần chuỗi theo luật của mình thì tự giữ và
+    /// gửi bằng key riêng có tiền tố.
     /// </summary>
     public class LevelLogDecorService : MySingleton<LevelLogDecorService>, ILogDecorator<FLevelLog>
     {
-        private const string WIN_STREAK_KEY = "Level_Win_Streak";
-        private const string LOSE_STREAK_KEY = "Level_Lose_Streak";
-
         private readonly LevelTurnService _turnService;
         private readonly EntityLabelService _entityLabelService;
         private readonly IFPlayerGeneralRepository _generalRepository;
         private readonly IDataPool _dataPool;
         private readonly ITimeRepository _timeRepository;
-        private readonly object _streakLock = new();
-        private string _lastStreakCountKey;
+        private readonly TurnLedgerService _turnLedger;
 
         public LevelLogDecorService(
             LevelTurnService turnService, EntityLabelService entityLabelService,
             IFPlayerGeneralRepository generalRepository,
-            IDataPool dataPool, ITimeRepository timeRepository)
+            IDataPool dataPool, ITimeRepository timeRepository, TurnLedgerService turnLedger)
         {
+            _turnLedger = turnLedger;
             _turnService = turnService;
             _entityLabelService = entityLabelService;
             _generalRepository = generalRepository;
@@ -53,6 +54,23 @@ namespace Falcon.Modules.Core.BigData
 
             // Điền tham số từ cache PHẢI chạy trước phần dưới vì LevelId phụ thuộc currentLevel/difficulty.
             _turnService.Apply(logParams);
+
+            // Bản chụp khẩn (S2): chỉ đọc — không mở / đóng sổ, không ghi pool, không báo LiveOps.
+            if (log.preview)
+            {
+                DecorPreview(log, logParams);
+                return;
+            }
+
+            // Sổ thời gian lượt (hợp đồng đợt 3 B6): Start mở đoạn 1; Pass / Fail / Skip / HeartBeat mang số tích luỹ của
+            // đoạn; dòng kết thúc đóng đoạn. Sổ chỉ mở cho đúng lượt đã Start (lượt "cụt đầu" không có sổ).
+            if (logParams.Status == LevelStatus.Start)
+                _turnLedger.Begin(logParams.playTurnId, 1);
+            else
+            {
+                log.turnLedger ??= _turnLedger.WireFor(logParams.playTurnId);
+                if (logParams.Status != LevelStatus.HeartBeat) _turnLedger.End();
+            }
 
             // Nhãn của MÀN đi ké level event (§D11) — dùng currentLevel CỦA CHÍNH LOG NÀY, không
             // phải màn đang mở: heartbeat trễ sau khi sang màn mới phải mang nhãn của màn nó tả.
@@ -97,70 +115,25 @@ namespace Falcon.Modules.Core.BigData
                     return logParams.Status == LevelStatus.Start ? val + 1 : val;
                 }).Value;
 
-            UpdateAndStampStreaks(log);
+            // Báo sang live-ops để nó cộng bộ đếm lượt chơi (toàn cục + riêng event nếu dòng này
+            // KHAI event). Chỉ cộng số, không sinh log — sinh log ở đây là đệ quy vô hạn.
+            // Lấy qua Instance thay vì tiêm vào ctor: LiveOpsLogService phụ thuộc
+            // LogScheduleService, mà service đó lại gom các decorator — tiêm là vòng tròn DI.
+            LiveOpsLogService.Instance.ReportLevel(logParams.playTurnId, logParams.Status, logParams);
         }
 
         /// <summary>
-        /// Win/lose streak xuyên level, SDK tự tính (luật §H3 — giá trị máy suy được không giao tay dev):
-        /// Pass → winStreak+1 và reset loseStreak; Fail → ngược lại; Skip/HeartBeat/Start không đụng streak.
-        /// <br/>Ván DROP (bỏ ngang, không terminal nào) cũng KHÔNG đụng — cố ý: "bỏ = thua" là
-        /// chính sách per-game chứ không phải bằng chứng, SDK suy hộ là chuỗi trên log lệch khỏi
-        /// chuỗi trên UI của game. Game coi bỏ là thua thì báo Fail(failReason: Quit) — chuỗi reset
-        /// tự nhiên và server được luôn fail_reason đúng vocab §D. Server muốn chuỗi-tính-cả-drop
-        /// thì tự derive: turn không terminal nhìn thấy ngay trong stream.
-        /// Start/HeartBeat mang streak TRƯỚC trận (vd "vào màn với 5 lần thua liên tiếp"),
-        /// terminal mang streak ĐÃ TÍNH trận đó. Mỗi (turn, status) chỉ đếm 1 lần để
-        /// double-fire terminal không làm lệch (Fail→revive→Pass cùng turn vẫn đếm cả hai vì khác status).
+        /// Như <see cref="Decor"/> cho heartbeat của bản chụp khẩn, không side effect. Sổ B6 bản chụp tự đính (cần cả khối
+        /// đang chạy — <see cref="TurnLedgerService.SnapshotFor"/>), ở đây không đụng.
         /// </summary>
-        private void UpdateAndStampStreaks(FLevelLog log)
+        private void DecorPreview(FLevelLog log, ALevelParamV2 logParams)
         {
-            var status = log.param.Status;
-            if (status is LevelStatus.Pass or LevelStatus.Fail)
-            {
-                var countKey = log.param.playTurnId + "_" + status;
-                lock (_streakLock)
-                {
-                    if (_lastStreakCountKey != countKey)
-                    {
-                        _lastStreakCountKey = countKey;
-                        _dataPool.Compute<int>(WIN_STREAK_KEY, v => status.IsPass() ? (v ?? 0) + 1 : 0);
-                        _dataPool.Compute<int>(LOSE_STREAK_KEY, v => status.IsFail() ? (v ?? 0) + 1 : 0);
-                    }
-                }
-            }
-
-            // ReSharper disable once PossibleInvalidOperationException
-            log.winStreak = _dataPool.Compute<int>(WIN_STREAK_KEY, v => v ?? 0).Value;
-            // ReSharper disable once PossibleInvalidOperationException
-            log.loseStreak = _dataPool.Compute<int>(LOSE_STREAK_KEY, v => v ?? 0).Value;
-        }
-
-        /// <summary>
-        /// Chuỗi THẮNG hiện tại (SDK tự tính, xuyên level + xuyên session). Đọc ở đây thay vì để
-        /// game tự đếm lần hai: đếm hai nơi thì sớm muộn UI và log lệch nhau, mà lúc đó không ai
-        /// biết bên nào đúng.
-        /// <br/>Ván bỏ ngang không đụng chuỗi (xem <see cref="UpdateAndStampStreaks"/>) — game coi
-        /// bỏ là thua thì báo <c>OnFail(failReason: Quit)</c>, đừng tự trừ tay.
-        /// </summary>
-        public int WinStreak => _dataPool.GetOrDefault(WIN_STREAK_KEY, 0);
-
-        /// <inheritdoc cref="WinStreak"/>
-        public int LoseStreak => _dataPool.GetOrDefault(LOSE_STREAK_KEY, 0);
-
-        /// <summary>
-        /// Reset winStreak về 0 — dành cho luật hết hạn của game (vd N ngày không chơi thì mất chuỗi).
-        /// Chỉ có reset, KHÔNG có setter tùy ý: streak là giá trị SDK tự tính (luật §H3),
-        /// cho set tay là mở cửa claim không bằng chứng.
-        /// </summary>
-        public void ResetWinStreak()
-        {
-            _dataPool.Compute<int>(WIN_STREAK_KEY, _ => 0);
-        }
-
-        /// <inheritdoc cref="ResetWinStreak"/>
-        public void ResetLoseStreak()
-        {
-            _dataPool.Compute<int>(LOSE_STREAK_KEY, _ => 0);
+            log.levelLabels ??= _entityLabelService.BundleFor(LabelEntityKind.Level, logParams.currentLevel.ToString());
+            if (logParams.autoCheckComeBackAfterFirstPass &&
+                _dataPool.GetOrDefault<long?>("HasPassedLevel_" + logParams.LevelId, null).HasValue)
+                logParams.comeBackAfterFirstPass = true;
+            log.failCount = _dataPool.GetOrDefault<int?>("Fail_Count_Level_" + logParams.LevelId, null) ?? 0;
+            log.playCount = _dataPool.GetOrDefault<int?>("Play_Count_Level_" + logParams.LevelId, null) ?? 0;
         }
     }
 }

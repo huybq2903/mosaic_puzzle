@@ -27,7 +27,17 @@ namespace Falcon.Modules.Core.BigData
     /// bằng USD (số đo liên tục → KHÔNG làm khoá, báo trung bình của bản ghi). Hai trục khác nhau,
     /// đừng trộn (chốt owner 23/09).
     /// <br/>⚠ <b>Không mang <c>adViewId</c></b>: đây là telemetry per-attempt của từng unit, không
-    /// thuộc vòng đời một lần xem ad. Nối với vòng đời qua <c>adUnitId</c>.
+    /// thuộc vòng đời một lần xem ad. Nối với vòng đời qua <c>adUnitId</c>. Cần nối load ↔ show thì
+    /// dùng chế độ TÁCH (<see cref="FAdLoadLog"/>, mặc định từ 1.5.5).
+    /// <br/>1.5.5 thêm <c>ecpm</c> (trung bình, trong <c>units[]</c>) và <c>adAlgorithm</c> (khoá
+    /// nhóm) — hai khoá MỚI trên một event đã đăng ký, cần loader ký.
+    /// <br/>1.5.7 thêm <c>floorType</c> (khoá gộp) + <c>floorPct</c> trong <c>units[]</c>.
+    /// ⚠ <b>Bốn cột mới của bản TÁCH không có ở đây và sẽ không bao giờ có</b>:
+    /// <c>ad_candidate_id</c> (mã riêng từng attempt — làm khoá thì cụm nở bằng số attempt, đúng vụ
+    /// <c>floor</c> liên tục ở 1.4.0; làm "bản cuối" thì là một mã sai),
+    /// <c>ad_load_attempt</c> (cụm đã có <c>ok</c>/<c>fail</c>), <c>first_ad_ecpm</c> và
+    /// <c>previous_ad_ecpm</c> (số của PHIÊN, trung bình hoá là vô nghĩa). Muốn đo flow chọn sàn thì
+    /// phải chạy chế độ TÁCH — <c>fAdLoadLogSplit = true</c>.
     /// </summary>
     [Serializable]
     public class FAdLoadStatsLog : AFalconLog
@@ -77,11 +87,33 @@ namespace Falcon.Modules.Core.BigData
             /// <summary>Mã lỗi CUỐI của nhóm fail — không làm khoá gộp.</summary>
             [JsonProperty("err", NullValueHandling = NullValueHandling.Ignore)]
             public string err;
+
+            /// <summary>
+            /// eCPM ước tính TRUNG BÌNH của các lần thành công có số (USD/1000 impression, làm tròn
+            /// 4 chữ số) — thêm 1.5.5 theo yêu cầu *"bản tin nào lấy được eCPM thì phải log eCPM"*.
+            /// Vắng = không lần nào mediation báo eCPM; số không dương không vào mẫu.
+            /// </summary>
+            [JsonProperty("ecpm", NullValueHandling = NullValueHandling.Ignore)]
+            public double? ecpm;
+
+            /// <inheritdoc cref="AdLoadStatsState.UnitStat.ecpmFloorType"/>
+            [JsonProperty("floorType", NullValueHandling = NullValueHandling.Ignore)]
+            public string floorType;
+
+            /// <inheritdoc cref="AdLoadStatsState.UnitStat.ecpmFloorPercentile"/>
+            [JsonProperty("floorPct", NullValueHandling = NullValueHandling.Ignore)]
+            public string floorPct;
         }
 
         public AdType adType;
 
         [FKey(RemoveIfNull = true)] public string adMediation;
+
+        /// <summary>
+        /// Thuật toán load của nhóm này — NẰM TRONG KHOÁ NHÓM (xem <see cref="AdLoadStatsState.Batch"/>),
+        /// nên một dòng chỉ chứa một thuật toán.
+        /// </summary>
+        [FKey(RemoveIfNull = true)] public string adAlgorithm;
 
         public List<UnitEntry> units = new();
 
@@ -94,6 +126,7 @@ namespace Falcon.Modules.Core.BigData
         {
             adType = batch.adType;
             adMediation = batch.adMediation;
+            adAlgorithm = batch.adAlgorithm;
             foreach (var unit in batch.units)
                 units.Add(new UnitEntry
                 {
@@ -105,7 +138,10 @@ namespace Falcon.Modules.Core.BigData
                     okMs = unit.okMs,
                     failMs = unit.failMs,
                     net = unit.networkName,
-                    err = unit.lastErrorMess
+                    err = unit.lastErrorMess,
+                    ecpm = unit.EcpmAverage is { } ecpmAvg ? Math.Round(ecpmAvg, 4) : null,
+                    floorType = unit.ecpmFloorType,
+                    floorPct = unit.ecpmFloorPercentile
                 });
         }
 

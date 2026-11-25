@@ -18,7 +18,7 @@ namespace Falcon.Modules.Core.BigData
     /// thêm/sửa sẽ quên một chỗ.
     /// </summary>
     [Serializable]
-    public abstract class AAdLog : AFalconLog
+    public abstract class AAdLog : AFalconLog, IPerfPackCarrier
     {
         /// <summary>
         /// Id của lần xem ad này — SDK sinh lúc request rồi đóng dấu lên cả bốn mốc, nhờ vậy server

@@ -39,8 +39,8 @@ namespace Falcon.Modules.Core.BigData.Tests
             // khác nghĩa. Và key bị chặn thì không được ăn mất slot trong trần 20 key.
             var guard = new LabelGuardState();
 
-            Assert.AreEqual(LabelCheck.ReservedKey, guard.Check("win_streak", 5, userScope: true));
-            Assert.AreEqual(LabelCheck.ReservedKey, guard.Check("winStreak", 5, userScope: false));
+            Assert.AreEqual(LabelCheck.ReservedKey, guard.Check("fail_count", 5, userScope: true));
+            Assert.AreEqual(LabelCheck.ReservedKey, guard.Check("failCount", 5, userScope: false));
 
             for (var i = 0; i < LabelGuardState.MAX_USER_LABEL_KEYS; i++)
                 Assert.AreEqual(LabelCheck.Ok, guard.Check("key_" + i, "v", userScope: true),

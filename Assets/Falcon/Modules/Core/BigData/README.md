@@ -63,9 +63,12 @@ FalconBigDataController.Label.User("vip_tier", "gold");
 FalconBigDataController.Common.Set("guild_id", "g_1207", persist: true);
 ```
 
-10 nhóm: `Level` · `Ad` · `IapOffer` · `Iap` · `Resource` · `Funnel` · `Label` · `Common` ·
-`App` · `Player`. Trong đó `Ad`/`Iap`/`App` thường do module Mediation/IAP/Push gọi hộ —
-dev game chủ yếu đụng `Level`, `IapOffer`, `Resource`, `Funnel`, `Label`, `Common`.
+14 nhóm: `Level` · `Ad` · `IapOffer` · `Iap` · `Resource` · `Funnel` · `Label` · `Common` ·
+`App` · `Ui` · `LiveOps` · `Feature` · `Ftue` · `Player`. Trong đó `Ad`/`Iap`/`App` thường do module
+Mediation/IAP/Push gọi hộ — dev game chủ yếu đụng `Level`, `IapOffer`, `Resource`, `Ui`, `Ftue`, `Funnel`.
+
+🚀 **Game MỚI tích hợp lần đầu — đọc [Integration-NewGame.md](docs/design/Integration-NewGame.md) trước:**
+cái gì đã tự có, cái gì phải tự gọi, gọi ở đâu, kiểm thế nào — checklist + code mẫu từng mục.
 
 📖 **Log thế nào cho đúng — đọc [TrackingGuide.md](docs/design/TrackingGuide.md)** (5 phút): recipe từng nhóm,
 vocab hằng số, litmus param-vs-label, và bảng lỗi kinh điển.
@@ -91,10 +94,11 @@ new MyCustomLog { action = "SpecialEvent", value = 99 }.Send();
 
 Thư mục `docs/` chia theo NGƯỜI ĐỌC: `design/` nền tảng sống lâu · `modules/` thư gửi owner
 module SDK · `games/` hướng dẫn tracking feature cho team game · `loader/` thư gửi data team
-(xoá sau khi ack, bản lưu ở git history).
+(ký xong **và** đã publish thì chuyển `archive/`). Bản đồ đầy đủ + trạng thái từng thư: [docs/README.md](docs/README.md).
 
 | File | Cho ai / để làm gì |
 |---|---|
+| [docs/design/Integration-NewGame.md](docs/design/Integration-NewGame.md) | **dev game MỚI** — checklist tích hợp, cầm tay chỉ việc từng mục |
 | [docs/design/TrackingGuide.md](docs/design/TrackingGuide.md) | **dev game** — cách gọi log đúng, recipe + lỗi kinh điển |
 | [docs/design/DWH-EventLog-API-Spec.md](docs/design/DWH-EventLog-API-Spec.md) | tra cứu field trên wire của từng event |
 | [docs/design/EntityLifecycle-Design.md](docs/design/EntityLifecycle-Design.md) | thiết kế: vòng đời entity, luật param/label, vì-sao của mọi quyết định |
@@ -102,11 +106,11 @@ module SDK · `games/` hướng dẫn tracking feature cho team game · `loader/
 | [docs/modules/Request-Mediation-AdLifecycle.md](docs/modules/Request-Mediation-AdLifecycle.md) | owner **Mediation** — nối vòng đời ad view |
 | [docs/modules/Request-Iap-CheckoutFunnel.md](docs/modules/Request-Iap-CheckoutFunnel.md) | owner **IAP** — nối phễu checkout |
 | [docs/modules/Request-Push-OpenSource.md](docs/modules/Request-Push-OpenSource.md) | owner **Push/Deeplink** — báo nguồn mở app |
-| [docs/modules/Request-Ump-PermissionLog.md](docs/modules/Request-Ump-PermissionLog.md) | owner **UMP** — ATT/consent |
+| [docs/modules/Request-Permission-AttConsentPush.md](docs/modules/Request-Permission-AttConsentPush.md) | owner **UMP** + **Notification** — ATT/consent/push |
 | [docs/modules/Request-Inventory-ResourceFlow.md](docs/modules/Request-Inventory-ResourceFlow.md) | owner **Inventory/Shop/Lives** — nối dòng tài nguyên |
 | [docs/games/Request-Game-MasterLeague.md](docs/games/Request-Game-MasterLeague.md) | team game — log event Master League |
 | [docs/games/Request-Game-RaceEvent.md](docs/games/Request-Game-RaceEvent.md) | team game — log Race Event (đua bot 3 chặng) |
-| [docs/loader/](docs/loader/) | thư đang chờ data team ack — đọc xong xoá |
+| [docs/loader/](docs/loader/) | thư gửi data team — ký xong và publish thì chuyển `archive/` |
 
 ---
 

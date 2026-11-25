@@ -51,6 +51,13 @@ namespace Falcon.Modules.Core.BigData
                 clone.exchangeId = resourceParam.exchangeId;
                 clone.adViewId = resourceParam.adViewId;
                 clone.transactionId = resourceParam.transactionId;
+                // Bảy field ngữ cảnh (4 trục event live-op + 3 trục tính năng) — qua hàm của lớp nền, KHÔNG
+                // liệt kê tay: từ khi ResourceParam kế thừa ALiveOpsParam, dòng clone này từng chép tay
+                // và quên cả bảy, nên thưởng event/tính năng đi qua FGameData (EventRewardGranter →
+                // ResourceLog → đây) rơi sạch live_ops_* / feature* (báo lỗi 11/11).
+                // ⚠ KHÔNG chép currencyClass: context thường dùng CHUNG cả mẻ grant nhiều loại tiền,
+                // còn hạng tiền đi theo TỪNG currency của giao dịch này — để StampCurrencyClass tra sổ.
+                clone.CopyContextFrom(resourceParam);
 
                 // Số đo của GIAO DỊCH này — từ đối số chuỗi gọi
                 clone.flowType = flowType;

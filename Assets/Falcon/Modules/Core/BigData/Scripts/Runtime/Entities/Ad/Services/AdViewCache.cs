@@ -68,22 +68,53 @@ namespace Falcon.Modules.Core.BigData
             lock (_lock) return _state.CurrentId(type);
         }
 
+        /// <inheritdoc cref="AdViewState.PendingViewId"/>
+        public string PendingViewId(AdType type)
+        {
+            lock (_lock) return _state.PendingViewId(type);
+        }
+
         /// <summary>Độ trễ fill (ms) từ lúc xin ad tới bây giờ — null nếu không đi từ request nào (§D2).</summary>
         public int? FillLatencyMs(AdType type)
         {
             lock (_lock) return _state.MillisSinceRequest(type, _timeRepository.CurrentTimeMillis);
         }
 
-        /// <summary>Ghi chỗ chiếu/ngữ cảnh cho view hiện tại — false nếu format chưa có request.</summary>
-        public bool SetContext(AdType type, string adWhere = null, string adWhen = null, string adMediation = null)
+        /// <inheritdoc cref="AdViewState.SetImpressionUnit"/>
+        public bool SetImpressionUnit(AdType type, string adUnitId)
         {
-            lock (_lock) return _state.SetContext(type, adWhere, adWhen, adMediation);
+            lock (_lock) return _state.SetImpressionUnit(type, adUnitId);
+        }
+
+        /// <inheritdoc cref="AdViewState.CurrentAlgorithm"/>
+        public string CurrentAlgorithm(AdType type)
+        {
+            lock (_lock) return _state.CurrentAlgorithm(type);
+        }
+
+        /// <inheritdoc cref="AdViewState.ImpressionUnitId"/>
+        public string ImpressionUnitId(AdType type)
+        {
+            lock (_lock) return _state.ImpressionUnitId(type);
+        }
+
+        /// <summary>Ghi chỗ chiếu/ngữ cảnh cho view hiện tại — false nếu format chưa có request.</summary>
+        public bool SetContext(AdType type, string adWhere = null, string adWhen = null,
+            string adMediation = null, string adAlgorithm = null, string triggerPlayTurnId = null)
+        {
+            lock (_lock) return _state.SetContext(type, adWhere, adWhen, adMediation, adAlgorithm, triggerPlayTurnId);
         }
 
         /// <summary>Luật hai chiều adWhere/adWhen/adMediation — xem AdViewState.ApplyContext.</summary>
         public void ApplyContext(AdViewParam param, AdType type)
         {
             lock (_lock) _state.ApplyContext(param, type);
+        }
+
+        /// <inheritdoc cref="AdViewState.LastFullScreenAd"/>
+        public (AdType? format, int? secAgo) LastFullScreenAd()
+        {
+            lock (_lock) return _state.LastFullScreenAd(_timeRepository.CurrentTimeMillis);
         }
 
         /// <summary>Ảnh chụp view hiện tại của format (bản sao; null nếu chưa có request).</summary>
