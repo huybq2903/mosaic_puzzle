@@ -1,0 +1,129 @@
+/*
+  Cửa sổ "Tạo ảnh bằng AI" và popup "Đang xử lý".
+  Lưới khoảng cách: 4, 8, 16, 24 px. Cỡ chữ: 11 (tiêu đề phần, nhãn phụ), 12 (chữ phụ), 13 (chữ thường), 15 (nhấn).
+  Mọi nhãn trong cửa sổ phải có lớp .ai-t: nó xoá lề và đệm mặc định của Unity để mép chữ thẳng với phần tử kề.
+  Quy tắc này chỉ áp lên lớp .ai-t, không quét theo kiểu phần tử; lớp riêng nào cần lề thì đặt lại phía dưới.
+*/
+
+/* Unity USS không có :first-child, :last-child và dấu + giữa hai bộ chọn: các lề đầu và cuối hàng đặt bằng code (xem AiDialog.TrimEnds). */
+.ai-t { margin: 0; padding: 0; }
+
+/* ---- khung ---- */
+.ai-win { background-color: rgb(46, 46, 51); border-radius: 8px; }
+/* tiêu đề căn giữa cả cửa sổ (không bị nút đóng đẩy lệch) */
+.ai-title, .busy-title { position: absolute; left: 0; right: 0; top: 0; bottom: 0; -unity-text-align: middle-center; -unity-font-style: bold; }
+.ai-body { padding: 0; }
+.ai-scroll { flex-shrink: 1; min-height: 0; max-height: 640px; }
+.ai-cols { flex-direction: row; align-items: flex-start; margin: 16px 0; }
+.ai-col1 { width: 290px; flex-shrink: 0; margin-left: 24px; margin-right: 24px; }
+.ai-col2 { flex-grow: 1; flex-shrink: 1; min-width: 0; margin-right: 16px; }
+.ai-foot { align-items: center; }
+.ai-why { color: rgb(252, 165, 165); }
+
+/* ---- tiêu đề phần ---- */
+.ai-sec { flex-direction: row; align-items: center; margin-top: 16px; margin-bottom: 8px; }
+.ai-sec-title { font-size: 11px; -unity-font-style: bold; letter-spacing: 1px; color: rgb(154, 163, 181); }
+.ai-link { color: rgb(125, 211, 252); font-size: 12px; }
+
+/* ---- nút chọn một (có dòng phụ) ---- */
+.ai-ch { flex-direction: row; margin: 0 0 8px 0; }
+.ai-b { flex-grow: 1; flex-basis: 0; flex-direction: column; justify-content: center; align-items: center; min-height: 40px; margin: 0 8px 0 0; padding: 8px 4px; overflow: hidden; background-color: rgb(75, 75, 83); border-width: 2px; border-color: rgba(0, 0, 0, 0.25); border-radius: 4px; color: rgb(230, 230, 234); }
+.ai-b:hover { background-color: rgb(91, 91, 101); }
+.ai-b.ai-on { border-color: rgb(250, 204, 21); background-color: rgb(85, 85, 96); }
+.ai-b > .ai-t { flex-grow: 0; flex-shrink: 1; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; -unity-text-align: middle-center; }
+.ai-b-label { color: rgb(230, 230, 234); }
+.ai-b-sub { margin-top: 2px; font-size: 11px; color: rgb(154, 163, 181); }
+
+/* ---- ảnh gốc ---- */
+.ai-photo-box { position: relative; height: 190px; border-radius: 8px; overflow: hidden; border-width: 1px; border-color: rgb(74, 74, 82); background-color: rgb(17, 17, 17); }
+.ai-photo { height: 100%; }
+.ai-photo-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 8px 8px; flex-direction: row; background-color: rgba(0, 0, 0, 0.62); color: rgb(230, 230, 234); }
+
+/* ---- server ---- */
+.ai-srv { margin-top: 0; padding: 8px; background-color: rgb(31, 31, 36); border-width: 1px; border-color: rgb(74, 74, 82); border-radius: 8px; }
+.ai-srv > .ai-t { margin-top: 8px; }
+.ai-state { flex-direction: row; align-items: center; margin-top: 8px; }
+.ai-after-pill { margin-left: 8px; }
+.ai-pill { flex-direction: row; align-items: center; padding: 4px 8px; border-radius: 12px; background-color: rgb(22, 48, 31); }
+.ai-pill > .ai-t { color: rgb(134, 239, 172); -unity-font-style: bold; font-size: 12px; }
+.ai-pill-warn { background-color: rgb(58, 50, 22); }
+.ai-pill-warn > .ai-t { color: rgb(253, 230, 138); }
+.ai-pill-bad { background-color: rgb(63, 25, 25); }
+.ai-pill-bad > .ai-t { color: rgb(252, 165, 165); }
+.ai-dot { width: 8px; height: 8px; margin-right: 8px; border-radius: 4px; background-color: rgb(74, 222, 128); }
+.ai-pill-warn > .ai-dot { background-color: rgb(250, 204, 21); }
+.ai-pill-bad > .ai-dot { background-color: rgb(248, 113, 113); }
+
+/* ---- kiểu vẽ ---- */
+.ai-modes { flex-direction: row; margin-bottom: 8px; }
+.ai-mode { flex-grow: 1; flex-basis: 0; flex-direction: row; align-items: center; margin-right: 8px; padding: 16px; background-color: rgb(58, 58, 66); border-width: 2px; border-color: rgba(0, 0, 0, 0); border-radius: 8px; }
+.ai-mode:hover { background-color: rgb(66, 66, 74); }
+.ai-mode.ai-on { border-color: rgb(250, 204, 21); background-color: rgb(69, 68, 63); }
+.ai-mode-ic { width: 40px; height: 40px; margin-right: 16px; flex-shrink: 0; border-radius: 8px; background-color: rgb(43, 43, 48); align-items: center; justify-content: center; }
+.ai-mode-ic .ai-pat-icon { width: 100%; height: 100%; margin-bottom: 0; background-color: rgba(0, 0, 0, 0); }
+
+/* ---- model ---- */
+.ai-grid { flex-direction: row; flex-wrap: wrap; }
+.ai-m { width: 49%; margin: 0 1% 8px 0; padding: 8px; flex-direction: row; align-items: center; background-color: rgb(31, 31, 36); border-width: 1px; border-color: rgb(74, 74, 82); border-radius: 8px; }
+.ai-m:hover { background-color: rgb(38, 38, 44); }
+.ai-m.ai-m-on { border-color: rgb(250, 204, 21); background-color: rgb(47, 45, 34); }
+.ai-radio { width: 14px; height: 14px; margin-right: 8px; flex-shrink: 0; border-radius: 7px; border-width: 2px; border-color: rgb(112, 112, 122); }
+.ai-radio.ai-radio-on { border-color: rgb(250, 204, 21); background-color: rgb(250, 204, 21); }
+.ai-m-name { -unity-font-style: bold; overflow: hidden; flex-shrink: 1; }
+.ai-tag { margin-left: 8px; padding: 0 8px; flex-shrink: 0; border-radius: 10px; font-size: 11px; color: rgb(165, 180, 252); background-color: rgb(39, 41, 74); }
+.ai-tag-latest { color: rgb(134, 239, 172); background-color: rgb(20, 50, 34); }
+.ai-tag-fast { color: rgb(253, 230, 138); background-color: rgb(58, 50, 22); }
+.ai-tag-preview { color: rgb(251, 207, 232); background-color: rgb(58, 29, 46); }
+
+/* ---- tuỳ chọn hai cột, kiểu chia nền, yêu cầu thêm ---- */
+.ai-two { flex-direction: row; }
+.ai-half { flex-grow: 1; flex-basis: 0; margin-right: 24px; }
+.ai-pat { flex-direction: row; flex-wrap: wrap; }
+.ai-pat-cell { width: 15.5%; flex-grow: 0; flex-basis: auto; margin: 0 1% 8px 0; padding: 8px 4px; }
+.ai-pat-icon { width: 100%; height: 46px; margin-bottom: 8px; border-radius: 4px; background-color: rgb(38, 38, 38); align-items: center; justify-content: center; }
+.ai-pat-glyph { color: rgb(230, 230, 234); font-size: 22px; -unity-font-style: bold; }
+.ai-extra { height: 56px; }
+.ai-count { align-self: flex-end; margin-top: 4px; color: rgb(154, 163, 181); font-size: 11px; }
+
+/* ---- chân cửa sổ ---- */
+.ai-chips { flex-direction: row; margin-right: 8px; }
+.ai-chip { margin: 0 8px 0 0; padding: 4px 8px; border-radius: 12px; font-size: 12px; background-color: rgb(58, 58, 66); color: rgb(214, 214, 220); }
+.ai-go { padding: 8px 24px; background-color: rgb(212, 107, 72); border-color: rgb(124, 58, 34); color: rgb(255, 255, 255); -unity-font-style: bold; }
+.ai-go:hover { background-color: rgb(224, 130, 95); }
+.ai-go:disabled { opacity: 0.45; }
+
+/* ---- màn đang vẽ ---- */
+.ai-run { width: auto; flex-grow: 1; margin-left: 24px; }
+.ai-slots { flex-direction: row; flex-wrap: wrap; }
+.ai-slot { width: 49%; min-height: 88px; margin: 0 1% 8px 0; padding: 8px; flex-direction: row; align-items: center; background-color: rgb(31, 31, 36); border-width: 1px; border-color: rgb(74, 74, 82); border-radius: 8px; }
+.ai-ic { width: 64px; height: 64px; margin-right: 16px; flex-shrink: 0; border-radius: 8px; background-color: rgb(42, 42, 48); background-size: cover; align-items: center; justify-content: center; }
+.ai-ic-err { background-color: rgb(80, 30, 30); }
+.ai-spin { width: 28px; height: 28px; border-width: 3px; border-radius: 14px; border-color: rgb(82, 82, 92); border-top-color: rgb(217, 119, 87); }
+.ai-slot-text { flex-grow: 1; flex-shrink: 1; min-width: 0; }
+.ai-slot-head { flex-direction: row; align-items: center; }
+.ai-slot-title { margin-right: 8px; -unity-font-style: bold; }
+.ai-ok { padding: 0 8px; border-radius: 10px; font-size: 11px; color: rgb(134, 239, 172); background-color: rgb(20, 50, 34); -unity-font-style: bold; }
+.ai-bad { padding: 0 8px; border-radius: 10px; font-size: 11px; color: rgb(252, 165, 165); background-color: rgb(63, 25, 25); -unity-font-style: bold; }
+.ai-bar { height: 4px; margin-top: 8px; border-radius: 2px; overflow: hidden; background-color: rgb(58, 58, 66); }
+.ai-bar-seg { position: absolute; top: 0; bottom: 0; width: 30%; border-radius: 2px; background-color: rgb(217, 119, 87); }
+.ai-log { -unity-text-align: upper-left; min-height: 96px; margin-top: 8px; padding: 8px; border-width: 1px; border-color: rgb(74, 74, 82); border-radius: 8px; font-size: 12px; color: rgb(184, 192, 208); background-color: rgb(22, 22, 26); }
+.ai-center { margin-top: 8px; -unity-text-align: middle-center; }
+
+/* ---- màn chọn ảnh ---- */
+.ai-list-col { flex-grow: 1; flex-shrink: 1; min-width: 0; margin-left: 24px; margin-right: 24px; }
+.ai-list { flex-direction: row; flex-wrap: wrap; }
+.ai-card { width: 49%; margin: 0 1% 8px 0; padding: 8px; border-width: 2px; border-color: rgb(74, 74, 82); border-radius: 8px; background-color: rgb(31, 31, 36); }
+.ai-card.ai-card-on { border-color: rgb(250, 204, 21); }
+.ai-card-img { width: 100%; border-radius: 4px; background-color: rgb(17, 17, 17); }
+.ai-card-tag { position: absolute; left: 8px; top: 8px; padding: 0 8px; border-radius: 10px; font-size: 11px; color: rgb(255, 255, 255); background-color: rgba(0, 0, 0, 0.7); }
+.ai-card-chk { position: absolute; right: 8px; top: 8px; width: 24px; height: 24px; border-radius: 12px; color: rgb(34, 34, 34); background-color: rgb(250, 204, 21); -unity-text-align: middle-center; -unity-font-style: bold; }
+.ai-meta { flex-direction: row; margin-top: 8px; }
+.ai-side { width: 250px; flex-shrink: 0; margin-right: 16px; }
+.ai-prompt { height: 230px; padding: 8px; border-width: 1px; border-color: rgb(74, 74, 82); border-radius: 8px; background-color: rgb(22, 22, 26); }
+.ai-note { margin-top: 8px; }
+
+/* ---- popup Đang xử lý ---- */
+.busy-win { background-color: rgb(46, 46, 51); border-radius: 8px; }
+.busy-spinner { width: 48px; height: 48px; margin: 16px 0 16px 0; align-self: center; }
+.busy-text { margin: 0 0 8px 0; -unity-text-align: middle-center; }
+.busy-sub { margin: 0 0 8px 0; -unity-text-align: middle-center; font-size: 12px; }

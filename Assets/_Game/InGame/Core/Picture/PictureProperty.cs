@@ -12,10 +12,7 @@ namespace Falcon.InGame.Core
         public int unit = 1; // toạ độ điểm = số nguyên theo 1/unit của lưới width×height
         public List<RegionData> regions = new();
         [JsonProperty(ItemConverterType = typeof(DeltaIntArrayConverter))]
-        public List<int[]> lines = new(); // nét đen trang trí (polyline mở, cùng toạ độ points), không phải mảnh
-        public List<int> lineWidths = new(); // độ dày mỗi nét trang trí (đơn vị như points); 0 = dày bằng viền
-        public List<int> lineThickness = new(); // độ dày mỗi nét theo % độ dày viền; 0 = mặc định (chấm dùng lineWidths)
-        public List<string> lineIds = new(); // id mỗi nét (song song với lines); level cũ chưa có thì EnsureIds tự sinh
+        public List<int[]> decor = new(); // hình trang trí kín tô đặc đen (râu, gân, mắt), cùng toạ độ points, tô theo nonzero
         public GenSettings gen = new();
 
         // Kẹp mọi điểm vào khung chữ nhật của tranh, mảnh không bao giờ tràn ra ngoài
@@ -36,7 +33,7 @@ namespace Falcon.InGame.Core
                 Clamp(r.points);
                 r.holes?.ForEach(Clamp);
             }
-            lines?.ForEach(Clamp);
+            decor?.ForEach(Clamp);
         }
 
         // Gán id cho mảnh và nét còn thiếu (level cũ, mảnh mới tách); giữ nguyên id đã có
@@ -52,13 +49,7 @@ namespace Falcon.InGame.Core
                 return id;
             }
             foreach (var r in regions) if (!string.IsNullOrEmpty(r.id)) used.Add(r.id);
-            lineIds ??= new List<string>();
-            foreach (var id in lineIds) if (!string.IsNullOrEmpty(id)) used.Add(id);
             foreach (var r in regions) if (string.IsNullOrEmpty(r.id)) r.id = Fresh("r");
-            var count = lines?.Count ?? 0;
-            while (lineIds.Count < count) lineIds.Add(null);
-            if (lineIds.Count > count) lineIds.RemoveRange(count, lineIds.Count - count);
-            for (var i = 0; i < lineIds.Count; i++) if (string.IsNullOrEmpty(lineIds[i])) lineIds[i] = Fresh("l");
         }
 
         public PictureProperty Clone() => new()
@@ -67,10 +58,7 @@ namespace Falcon.InGame.Core
             height = height,
             unit = unit,
             gen = gen.Clone(),
-            lines = lines?.ConvertAll(l => (int[])l.Clone()),
-            lineWidths = lineWidths != null ? new List<int>(lineWidths) : null,
-            lineThickness = lineThickness != null ? new List<int>(lineThickness) : null,
-            lineIds = lineIds != null ? new List<string>(lineIds) : null,
+            decor = decor?.ConvertAll(l => (int[])l.Clone()),
             regions = regions.ConvertAll(r => new RegionData { id = r.id, points = (int[])r.points?.Clone(), colorId = r.colorId, value = r.value, valueManual = r.valueManual, holes = r.holes?.ConvertAll(h => (int[])h.Clone()), widths = (int[])r.widths?.Clone(), holeWidths = r.holeWidths?.ConvertAll(h => (int[])h.Clone()) }),
         };
     }
@@ -81,8 +69,9 @@ namespace Falcon.InGame.Core
         [JsonConverter(typeof(DeltaIntArrayConverter))]
         public int[] points;
         public int colorId;
-        public int value; // giá trị cát của mảnh (50..300, bậc 50), tính từ diện tích
+        public int value; // số cát của mảnh (nguyên từ 1), gợi ý theo diện tích
         public bool valueManual; // true = người dùng đặt tay: không bị tính lại theo diện tích
+        public bool hidden; // mảnh ẩn màu: trong game phủ xám dấu ? cho tới khi mở được
         [JsonProperty(ItemConverterType = typeof(DeltaIntArrayConverter))]
         public List<int[]> holes; // lỗ trong mảnh (polygon đơn mỗi lỗ, cùng toạ độ với points); null = không lỗ
         [JsonConverter(typeof(DeltaIntArrayConverter), 1)]

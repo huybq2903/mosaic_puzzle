@@ -8,8 +8,9 @@ namespace Falcon.InGame.Core
     [PropertyDataType("boxQueue")]
     public class BoxQueueProperty : MultipleEntityDataProperty<BoxData>
     {
-        public const int DefaultColumns = 3, MaxColumns = 5;
+        public const int DefaultColumns = 3, MaxColumns = 5, MinSlots = 3, MaxSlots = 5;
         public int columns = DefaultColumns;
+        public int slots = MaxSlots; // số ô chờ 3..5
 
         // Số cột hiển thị: đủ chứa mọi hộp, tối thiểu bằng số cột đã đặt
         public int ColumnCount => System.Math.Max(columns, list.Count == 0 ? 1 : list.Max(b => b.column) + 1);
@@ -34,13 +35,16 @@ namespace Falcon.InGame.Core
         public BoxQueueProperty Clone() => new()
         {
             columns = columns,
-            list = list.ConvertAll(b => new BoxData { id = b.id, colorId = b.colorId, value = b.value, column = b.column }),
+            slots = slots,
+            list = list.ConvertAll(b => new BoxData { id = b.id, colorId = b.colorId, value = b.value, column = b.column, hidden = b.hidden, pair = b.pair, frozen = b.frozen }),
         };
     }
 
-    /// <summary>1 hộp: màu, sức chứa cát (50..300, bậc 50), cột chứa nó.</summary>
+    /// <summary>1 hộp: màu, số cát, cột chứa nó; hidden = ẩn màu, pair = số nhóm nối (0 = không), frozen = số hộp phải rời ô chờ trước khi tan băng (0 = không băng).</summary>
     public class BoxData : EntityData
     {
         public int colorId, value, column;
+        public bool hidden;
+        public int pair, frozen;
     }
 }

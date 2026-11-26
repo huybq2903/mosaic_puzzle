@@ -2,17 +2,17 @@ using UnityEngine;
 
 namespace Falcon.InGame.Core
 {
-    /// <summary>Giá trị cát của mảnh theo diện tích (quy luật đo từ 100 level game): ≈ 0,0107 mỗi pixel trên tranh 816², làm tròn bậc 50, trong 50..300.</summary>
+    /// <summary>Số cát của mảnh như Studio: số nguyên từ 1 trở lên (không trần), gợi ý theo diện tích bậc 5 trong 5..30.</summary>
     public static class PieceValue
     {
-        public const int Step = 50, Min = 50, Max = 300;
-        private const float PerFraction = 7125f; // 0,0107 × 816²: giá trị thô của mảnh chiếm toàn bộ tranh
+        public const int Step = 5, Min = 1, Max = 9999, AutoMax = 30;
+        private const float PerFraction = 712.5f; // giá trị thô của mảnh chiếm toàn bộ tranh
 
         public static int FromAreaFraction(float fraction) =>
-            Mathf.Clamp(Mathf.RoundToInt(fraction * PerFraction / Step) * Step, Min, Max);
+            Mathf.Clamp(Mathf.RoundToInt(fraction * PerFraction / Step) * Step, Step, AutoMax);
 
-        // Làm tròn về bậc 50 và kẹp trong 50..300
-        public static int Clamp(int value) => Mathf.Clamp(Mathf.RoundToInt(value / (float)Step) * Step, Min, Max);
+        // Số nguyên bất kỳ từ 1 trở lên
+        public static int Clamp(int value) => Mathf.Clamp(value, Min, Max);
 
         // Giá trị gợi ý theo diện tích (đa giác trừ lỗ, theo toạ độ lưu)
         public static int Suggest(PictureProperty p, RegionData r)

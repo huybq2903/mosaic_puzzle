@@ -1,0 +1,17 @@
+{
+    "name": "Falcon.InGame.LevelEditor.Playtest",
+    "rootNamespace": "Falcon.InGame.UI",
+    "references": [
+        "Unity.InputSystem",
+        "UnityEngine.UI"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

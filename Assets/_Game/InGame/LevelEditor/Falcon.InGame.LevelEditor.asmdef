@@ -1,0 +1,27 @@
+{
+    "name": "Falcon.InGame.LevelEditor",
+    "rootNamespace": "Falcon.InGame.LevelEditor",
+    "references": [
+        "Falcon.InGame.Core",
+        "Falcon.Shared.BaseLevelEditor",
+        "Falcon.Shared.BaseInGame",
+        "Falcon.Shared.Common",
+        "Falcon.Helpers.FReflection.Runtime",
+        "Unity.InputSystem",
+        "StandaloneFileBrowser"
+    ],
+    "includePlatforms": [
+        "Editor",
+        "WSA",
+        "WindowsStandalone32",
+        "WindowsStandalone64"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
